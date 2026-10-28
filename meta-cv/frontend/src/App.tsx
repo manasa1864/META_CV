@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { sendFeedback, streamChat, type ChatEvent, type Final, type Mode, type Step } from './api'
-import MetricsView from './Metrics'
 import './App.css'
+
+const MetricsView = lazy(() => import('./Metrics'))
 
 type Phase = 'thinking' | 'answering' | 'done' | 'error'
 
@@ -171,7 +172,11 @@ export default function App() {
           update(aid, () => ({ phase: 'done', final: ev }))
           break
         case 'error':
-          update(aid, () => ({ phase: 'error', error: ev.message }))
+          update(aid, (m) => ({
+            phase: 'error',
+            error: ev.message,
+            steps: m.steps.map((s) => (s.status === 'running' ? { ...s, status: 'fail' } : s)),
+          }))
           break
       }
     }
@@ -179,7 +184,11 @@ export default function App() {
     try {
       await streamChat(question, mode, conversationId, onEvent)
     } catch (err) {
-      update(aid, () => ({ phase: 'error', error: String(err) }))
+      update(aid, (m) => ({
+        phase: 'error',
+        error: String(err),
+        steps: m.steps.map((s) => (s.status === 'running' ? { ...s, status: 'fail' } : s)),
+      }))
     } finally {
       update(aid, (m) => (m.phase === 'answering' ? { phase: 'done' } : {}))
       setBusy(false)
@@ -230,7 +239,11 @@ export default function App() {
         )}
       </header>
 
-      {view === 'metrics' && <MetricsView />}
+      {view === 'metrics' && (
+        <Suspense fallback={<div className="metrics"><p className="card-note">Loading…</p></div>}>
+          <MetricsView />
+        </Suspense>
+      )}
 
       <main hidden={view !== 'chat'}>
         {messages.length === 0 && (
