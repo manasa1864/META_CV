@@ -8,10 +8,14 @@ A chatbot that checks its answers against a knowledge graph before it says them,
 - The UI streams each step ("See the thinking"), says when processing is complete, then gives the answer.
 
 ```
-backend/    FastAPI app (graph store, verification engine, LLM client, tests)
-frontend/   React + Vite chat UI
-demo_server.py   backend with a scripted stand-in for the LLM (no API key needed)
+META/                       (the repository root)
+└── meta-cv/
+    ├── backend/            FastAPI app (graph store, verification engine, LLM client, tests)
+    ├── frontend/           React + Vite chat UI
+    └── demo_server.py      backend with a scripted stand-in for the LLM (no API key needed)
 ```
+
+All commands below are run from the `meta-cv` folder.
 
 ## Requirements
 
