@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { streamChat, type ChatEvent, type Final, type Mode, type Step } from './api'
+import { sendFeedback, streamChat, type ChatEvent, type Final, type Mode, type Step } from './api'
+import MetricsView from './Metrics'
 import './App.css'
 
 type Phase = 'thinking' | 'answering' | 'done' | 'error'
@@ -15,15 +16,58 @@ type Message =
       final?: Final
       error?: string
       showThinking: boolean
+      feedback?: boolean
     }
 
 const STAGES: Record<string, string> = {
   cache: 'Verified-path cache',
-  router: 'Routing',
+  router: 'Hallucination risk & routing',
+  states: 'Reused reasoning',
+  consistency: 'Conversation consistency',
   graph: 'Knowledge graph',
   factual: 'Factual verification',
   reasoning: 'Reasoning checks',
   compose: 'Composing',
+}
+
+const newConversationId = () => crypto.randomUUID()
+
+function Meta({ final }: { final: Final }) {
+  const [open, setOpen] = useState(false)
+  const parts = [
+    `risk: ${final.hallucination_type}`,
+    `tier: ${final.tier}${final.mode ? ` (${final.mode})` : ''}${final.router?.learned ? ' · learned route' : ''}`,
+    `confidence: ${final.confidence}`,
+    final.from_cache ? `reused verified path · ${final.tokens.saved} tokens saved` : `${final.tokens.total} tokens`,
+  ]
+  if (final.reused_state) parts.push(`adapted a similar verified answer`)
+  return (
+    <div className="meta">
+      {parts.join(' · ')}
+      {final.standalone && <div>answered as: “{final.standalone}”</div>}
+      {(final.caught.length > 0 || final.withheld > 0) && (
+        <>
+          {' '}
+          <button type="button" className="link" onClick={() => setOpen(!open)}>
+            {final.caught.length} hallucination{final.caught.length === 1 ? '' : 's'} caught
+            {final.withheld ? `, ${final.withheld} unverified claim${final.withheld === 1 ? '' : 's'} withheld` : ''}
+          </button>
+          {open && (
+            <ul className="caught">
+              {final.caught.map((c, i) => (
+                <li key={i}>
+                  <span className={`tag ${c.action}`}>
+                    {c.type} · {c.action}
+                  </span>{' '}
+                  {c.detail}
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </div>
+  )
 }
 
 const ICONS: Record<Step['status'], string> = { running: '', ok: '✓', warn: '!', fail: '✗', info: '•' }
@@ -78,6 +122,8 @@ export default function App() {
   const [input, setInput] = useState('')
   const [mode, setMode] = useState<Mode>('auto')
   const [busy, setBusy] = useState(false)
+  const [view, setView] = useState<'chat' | 'metrics'>('chat')
+  const [conversationId, setConversationId] = useState(newConversationId)
   const nextId = useRef(1)
   const bottom = useRef<HTMLDivElement>(null)
 
@@ -131,7 +177,7 @@ export default function App() {
     }
 
     try {
-      await streamChat(question, mode, onEvent)
+      await streamChat(question, mode, conversationId, onEvent)
     } catch (err) {
       update(aid, () => ({ phase: 'error', error: String(err) }))
     } finally {
@@ -140,22 +186,53 @@ export default function App() {
     }
   }
 
+  async function rate(id: number, turnId: number, helpful: boolean) {
+    try {
+      await sendFeedback(turnId, helpful)
+      update(id, () => ({ feedback: helpful }))
+    } catch (err) {
+      update(id, () => ({ error: `Feedback not saved: ${String(err)}` }))
+    }
+  }
+
+  function newChat() {
+    setMessages([])
+    setConversationId(newConversationId())
+  }
+
   return (
-    <div className="app">
+    <div className={`app ${view === 'metrics' ? 'wide' : ''}`}>
       <header>
         <h1>META</h1>
-        <label>
-          Reasoning mode{' '}
-          <select value={mode} onChange={(e) => setMode(e.target.value as Mode)}>
-            <option value="auto">auto (balanced)</option>
-            <option value="conservative">conservative</option>
-            <option value="balanced">balanced</option>
-            <option value="aggressive">aggressive</option>
-          </select>
-        </label>
+        <nav className="tabs">
+          <button type="button" className={view === 'chat' ? 'active' : ''} onClick={() => setView('chat')}>
+            Chat
+          </button>
+          <button type="button" className={view === 'metrics' ? 'active' : ''} onClick={() => setView('metrics')}>
+            Metrics
+          </button>
+        </nav>
+        {view === 'chat' && (
+          <div className="controls">
+            <label>
+              Reasoning mode{' '}
+              <select value={mode} onChange={(e) => setMode(e.target.value as Mode)}>
+                <option value="auto">auto (balanced)</option>
+                <option value="conservative">conservative</option>
+                <option value="balanced">balanced</option>
+                <option value="aggressive">aggressive</option>
+              </select>
+            </label>
+            <button type="button" className="ghost" onClick={newChat} disabled={busy}>
+              New chat
+            </button>
+          </div>
+        )}
       </header>
 
-      <main>
+      {view === 'metrics' && <MetricsView />}
+
+      <main hidden={view !== 'chat'}>
         {messages.length === 0 && (
           <div className="empty">Ask about a person, a book and its characters, or give a problem to solve.</div>
         )}
@@ -188,11 +265,22 @@ export default function App() {
                 </div>
               )}
               {m.error && <div className="error">{m.error}</div>}
+              {m.final && <Meta final={m.final} />}
               {m.final && (
-                <div className="meta">
-                  {m.final.tier}
-                  {m.final.mode ? ` · ${m.final.mode}` : ''} · confidence: {m.final.confidence}
-                  {m.final.from_cache ? ' · reused verified path' : ''}
+                <div className="feedback">
+                  {m.feedback === undefined ? (
+                    <>
+                      Was this right?
+                      <button type="button" className="ghost" onClick={() => rate(m.id, m.final!.turn_id, true)}>
+                        Yes
+                      </button>
+                      <button type="button" className="ghost" onClick={() => rate(m.id, m.final!.turn_id, false)}>
+                        No
+                      </button>
+                    </>
+                  ) : (
+                    <span>Thanks - the router will learn from this.</span>
+                  )}
                 </div>
               )}
             </div>
@@ -201,7 +289,7 @@ export default function App() {
         <div ref={bottom} />
       </main>
 
-      <form onSubmit={send}>
+      <form onSubmit={send} hidden={view !== 'chat'}>
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}

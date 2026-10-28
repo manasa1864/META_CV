@@ -1,6 +1,26 @@
-@"
+# secrets
 .env
+.env.*
+!.env.example
+
+# python
+venv/
 .venv/
-node_modules/
 __pycache__/
-"@ | Set-Content -Encoding ascii .gitignore
+*.pyc
+.pytest_cache/
+
+# runtime data (recreated on startup)
+backend/*.db
+backend/bench_results/
+
+# node
+node_modules/
+frontend/dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# a nested clone of this repo
+/META_CV/
