@@ -1,6 +1,12 @@
-@"
+# secrets
 .env
+
+# environments and build output
 .venv/
 node_modules/
+dist/
 __pycache__/
-"@ | Set-Content -Encoding ascii .gitignore
+.pytest_cache/
+
+# local databases (recreated by the app / seed script)
+*.db
