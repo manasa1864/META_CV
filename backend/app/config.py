@@ -3,17 +3,13 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# backend/.env wins; ~/.meta_cv/.env (outside the repo) fills anything it lacks, so fresh clones keep working.
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+load_dotenv(os.getenv("META_ENV_FILE") or Path.home() / ".meta_cv" / ".env")
 
 DB_PATH = os.getenv("DB_PATH", str(Path(__file__).resolve().parent.parent / "meta.db"))
 
 GRAPH_BACKEND = os.getenv("GRAPH_BACKEND", "sqlite").lower()
-FALKORDB_HOST = os.getenv("FALKORDB_HOST", "localhost")
-FALKORDB_PORT = int(os.getenv("FALKORDB_PORT", "6379"))
-FALKORDB_USERNAME = os.getenv("FALKORDB_USERNAME") or None
-FALKORDB_PASSWORD = os.getenv("FALKORDB_PASSWORD") or None
-FALKORDB_SSL = os.getenv("FALKORDB_SSL", "false").lower() == "true"
-FALKORDB_GRAPH = os.getenv("FALKORDB_GRAPH", "meta")
 
 
 def _env(*names: str, default: str = "") -> str:

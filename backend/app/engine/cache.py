@@ -23,15 +23,7 @@ def save(question: str, result: dict) -> None:
 def _still_valid(store, hit: dict) -> str | None:
     """None if the path still holds; otherwise why not."""
     if hit["tier"] == "factual":
-        for c in hit["path"]:
-            if c["status"] != "accepted":
-                continue
-            if c["source"] in ("graph", "graph-corrected"):
-                if store.validate(c["subject"], c["relation"], c["object"])["verdict"] != "supported":
-                    return f"graph no longer supports {c['subject']} {c['relation']} {c['object']}"
-            elif state_cache.get(factual.claim_key(c)) is None:
-                return f"verification of {c['subject']} {c['relation']} {c['object']} expired"
-        return None
+        return factual.still_holds(store, hit["path"])
     bad = reasoning.first_arithmetic_error(hit["path"])
     return f"step {bad[0] + 1}: {bad[1]}" if bad else None
 

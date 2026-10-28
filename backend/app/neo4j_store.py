@@ -35,6 +35,10 @@ class Neo4jGraphStore:
             n=name.lower(), f=functional, t=transitive,
         )
 
+    def is_functional(self, relation: str) -> bool:
+        rows = self._run("MATCH (r:Relation {name:$n}) RETURN r.functional AS f", n=relation.lower())
+        return bool(rows and rows[0]["f"])
+
     def add_fact(self, subject: str, relation: str, obj: str, source: str | None = None) -> None:
         """Relations need no prior definition: unseen ones are registered with no rules."""
         t = _rel_type(relation)
@@ -42,7 +46,7 @@ class Neo4jGraphStore:
             f"MERGE (a:Entity {{name:$s}}) MERGE (b:Entity {{name:$o}}) "
             f"MERGE (a)-[e:{t}]->(b) "
             "ON CREATE SET e.count = 1 ON MATCH SET e.count = e.count + 1 "
-            "SET e.source = coalesce($src, e.source) "
+            "SET e.source = coalesce($src, e.source), e.verified_at = datetime() "
             "MERGE (r:Relation {name:$r}) ON CREATE SET r.functional = false, r.transitive = false",
             s=subject.lower(), o=obj.lower(), r=relation.lower(), src=source,
         )

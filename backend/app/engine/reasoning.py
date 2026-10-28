@@ -89,15 +89,23 @@ def _logic_check(question: str, sol: dict) -> tuple[int, str] | None:
     return max(0, min(idx, max(len(sol["steps"]) - 1, 0))), str(d.get("reason", "inconsistent step"))[:300]
 
 
-def solve_once(question: str, cfg: dict, trace: Trace, label: str, temperature: float):
+def _prior_txt(prior: dict) -> str:
+    s = prior["state"]
+    return (f"\n\nA similar problem was solved and verified before. Reuse its approach where it applies, "
+            f"but recompute every number for THIS problem.\nSimilar problem: {prior['question']}\n"
+            f"Its verified steps:\n{_steps_txt(s['steps'])}\nIts answer: {s['final_answer']}")
+
+
+def solve_once(question: str, cfg: dict, trace: Trace, label: str, temperature: float, prior: dict | None = None):
     """Generator: one solution, checked and backtracked. Returns the solution with verified flag."""
-    ev = trace.start("reasoning", f"{label}: solving step by step")
+    ev = trace.start("reasoning", f"{label}: solving step by step" + (" (adapting a verified similar solution)" if prior else ""))
     yield ev
-    sol = _parse_solution(llm.chat_json(SOLVE_SYSTEM, f"Problem: {question}", temperature))
+    sol = _parse_solution(llm.chat_json(SOLVE_SYSTEM, f"Problem: {question}" + (_prior_txt(prior) if prior else ""),
+                                        temperature))
     yield trace.settle(ev, "ok", f"{len(sol['steps'])} steps, answer: {sol['final_answer'] or '(none)'}",
                        steps=sol["steps"])
 
-    backtracks = 0
+    backtracks, fixes = 0, []
     while True:
         ev = trace.start("reasoning", f"{label}: checking every step for contradictions")
         yield ev
@@ -108,14 +116,15 @@ def solve_once(question: str, cfg: dict, trace: Trace, label: str, temperature: 
         if bad is None:
             what = "arithmetic machine-checked" + (", logic checked independently" if cfg["logic_check"] else "")
             yield trace.settle(ev, "ok", f"No contradictions ({what}).")
-            return {**sol, "verified": True, "backtracks": backtracks}
+            return {**sol, "verified": True, "backtracks": backtracks, "fixes": fixes}
 
         idx, why = bad
         if backtracks >= cfg["max_backtracks"]:
             yield trace.settle(ev, "fail", f"Step {idx + 1} still wrong ({kind}: {why}); backtrack limit reached.")
-            return {**sol, "verified": False, "backtracks": backtracks, "problem": f"step {idx + 1}: {why}"}
+            return {**sol, "verified": False, "backtracks": backtracks, "fixes": fixes, "problem": f"step {idx + 1}: {why}"}
 
         backtracks += 1
+        fixes.append(f"step {idx + 1} ({kind}): {why}")
         yield trace.settle(ev, "warn", f"Contradiction at step {idx + 1} ({kind}): {why}. "
                                        f"Going back to step {idx + 1} (backtrack {backtracks}/{cfg['max_backtracks']}).")
         ev = trace.start("reasoning", f"{label}: redoing from step {idx + 1}",
@@ -157,18 +166,31 @@ def _agreed(cfg: dict, keys: list[str], total: int) -> tuple[str | None, int]:
     return (top if ok else None), n
 
 
-def answer(question: str, mode: str, trace: Trace):
-    """Generator: yields trace events, returns the tier result."""
+def _same_question(a: str, b: str) -> bool:
+    return " ".join(a.lower().split()).rstrip("?. ") == " ".join(b.lower().split()).rstrip("?. ")
+
+
+def answer(question: str, mode: str, trace: Trace, prior: dict | None = None, earlier: list[dict] | None = None):
+    """Generator: yields trace events, returns the tier result.
+
+    prior: a similar problem's verified state (states.find), adapted by the first solution only, so the
+    independent cross-check solutions stay independent. earlier: answers this conversation already gave.
+    """
     cfg = MODES[mode]
     yield trace.note("reasoning", f"Mode: {mode}",
                      f"{cfg['samples']} independent solution(s) (up to {cfg['max_samples']}), agreement: "
                      f"{cfg['agreement']}, logic check: {'on' if cfg['logic_check'] else 'off'}, "
                      f"max backtracks: {cfg['max_backtracks']}")
+    if prior:
+        yield trace.note("states", "Reusing verified reasoning",
+                         f"A similar problem (“{prior['question']}”, similarity {prior['similarity']}) was solved and "
+                         f"verified before; solution 1 adapts its {len(prior['state']['steps'])} checked steps.", "ok")
     solutions: list[dict] = []
     winner = None
     while len(solutions) < cfg["max_samples"]:
         n = len(solutions)
-        sol = yield from solve_once(question, cfg, trace, f"Solution {n + 1}", 0 if n == 0 else 0.7)
+        sol = yield from solve_once(question, cfg, trace, f"Solution {n + 1}", 0 if n == 0 else 0.7,
+                                    prior if n == 0 else None)
         solutions.append(sol)
         if len(solutions) < cfg["samples"]:
             continue
@@ -196,10 +218,33 @@ def answer(question: str, mode: str, trace: Trace):
     else:
         best, confidence = solutions[0], "low"
 
+    caught = [{"type": "reasoning", "action": "corrected", "detail": f"solution {k}, {fix}"}
+              for k, s in enumerate(solutions, 1) for fix in s["fixes"]]
+    caught += [{"type": "reasoning", "action": "dropped" if s is not best else "flagged",
+                "detail": f"solution {k} could not be verified ({s['problem']})"}
+               for k, s in enumerate(solutions, 1) if not s["verified"]]
+    distinct = {answer_key(s["final_answer"]) for s in verified}
+    if len(distinct) > 1:
+        caught.append({"type": "reasoning", "action": "flagged",
+                       "detail": "independent solutions disagreed: " + ", ".join(s["final_answer"] for s in verified)})
+
+    clash = next((e for e in earlier or [] if _same_question(e["question"], question)
+                  and answer_key(e["final_answer"]) != answer_key(best["final_answer"])), None)
+    if clash:
+        caught.append({"type": "consistency", "action": "flagged",
+                       "detail": f"earlier in this conversation the answer was {clash['final_answer']}, now {best['final_answer']}"})
+        yield trace.note("consistency", "Conflict with an earlier answer",
+                         f"Earlier this conversation answered {clash['final_answer']}; this run verified "
+                         f"{best['final_answer']}.", "warn")
+        confidence = "medium" if confidence == "high" else confidence
+
     lines = [f"**Answer: {best['final_answer'] or 'not determined'}**", "", "How I got there:"]
     lines += [f"{i}. {s['text']}" + (f" ({s['expression']} = {s['result']})" if s["expression"] else "")
               for i, s in enumerate(best["steps"], 1)]
-    if confidence == "medium":
+    if clash:
+        lines += ["", f"_Note: earlier in this conversation I answered {clash['final_answer']}; "
+                      f"this re-checked solution gives {best['final_answer']}._"]
+    elif confidence == "medium":
         lines += ["", "_Note: the independent solutions did not fully agree, so treat this with some caution._"]
     if confidence == "low":
         lines += ["", f"_Warning: I could not verify this solution ({best.get('problem', 'checks failed')})._"]
@@ -211,5 +256,7 @@ def answer(question: str, mode: str, trace: Trace):
         "path": best["steps"],
         "final_answer": best["final_answer"],
         "solutions": len(solutions),
+        "caught": caught,
+        "withheld": 0,
         "cacheable": confidence == "high",
     }

@@ -10,6 +10,7 @@ RELATIONS = [  # name, functional, transitive
     ("born_in", True, False),
     ("published_in", True, False),
     ("located_in", False, True),
+    ("nobel_prize_year", True, False),
 ]
 
 FACTS = """
@@ -35,6 +36,8 @@ tom robinson | character_in | to kill a mockingbird
 atticus finch | defends | tom robinson
 1984 | written_by | george orwell
 1984 | published_in | 1949
+1984 | genre | dystopian fiction
+dystopian fiction | incompatible_with | utopian fiction
 winston smith | character_in | 1984
 jane austen | born_in | steventon
 j. k. rowling | born_in | yate
@@ -47,6 +50,7 @@ marie curie | discovered | polonium
 marie curie | discovered | radium
 albert einstein | born_in | ulm
 albert einstein | won | nobel prize in physics
+albert einstein | nobel_prize_year | 1921
 albert einstein | developed | theory of relativity
 isaac newton | formulated | laws of motion
 isaac newton | formulated | law of universal gravitation

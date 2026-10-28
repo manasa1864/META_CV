@@ -1,6 +1,8 @@
-"""Thin wrapper over the Meta API (OpenAI-compatible) for fact extraction and rule proposals."""
+"""Thin wrapper over the Meta API (OpenAI-compatible), with per-run token metering."""
 import json
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from openai import OpenAI
 
@@ -13,6 +15,49 @@ class LLMNotConfigured(RuntimeError):
 
 class LLMBadOutput(ValueError):
     pass
+
+
+_meter: ContextVar[dict | None] = ContextVar("llm_meter", default=None)
+
+
+def new_meter() -> dict:
+    return {"prompt": 0, "completion": 0, "calls": 0}
+
+
+def estimate_tokens(text: str) -> int:
+    return max(1, len(text) // 4)
+
+
+def record_usage(prompt: int, completion: int) -> None:
+    m = _meter.get()
+    if m is not None:
+        m["prompt"] += prompt
+        m["completion"] += completion
+        m["calls"] += 1
+
+
+@contextmanager
+def metering(meter: dict):
+    token = _meter.set(meter)
+    try:
+        yield meter
+    finally:
+        _meter.reset(token)
+
+
+def metered(gen, meter: dict):
+    """Drive a generator so every LLM call made inside it is counted in `meter`.
+
+    The meter is set around each step, not once, because a streaming response may
+    resume the generator from a different thread (and so a different context).
+    """
+    while True:
+        with metering(meter):
+            try:
+                item = next(gen)
+            except StopIteration as stop:
+                return stop.value
+        yield item
 
 
 def _client() -> OpenAI:
@@ -38,7 +83,13 @@ def chat_text(system: str, user: str, temperature: float = 0) -> str:
         temperature=temperature,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
     )
-    return resp.choices[0].message.content or ""
+    text = resp.choices[0].message.content or ""
+    u = getattr(resp, "usage", None)
+    if u is not None and u.prompt_tokens is not None:
+        record_usage(u.prompt_tokens, u.completion_tokens or 0)
+    else:
+        record_usage(estimate_tokens(system + user), estimate_tokens(text))
+    return text
 
 
 def chat_json(system: str, user: str, temperature: float = 0):

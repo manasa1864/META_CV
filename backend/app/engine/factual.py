@@ -7,6 +7,9 @@ accepted nodes:
   2. cache     - it was model-verified before
   3. model     - not in the graph: an independent true/false judgment AND a blind
                  probe (asked without seeing the claimed object) must agree
+An accepted node must also not clash with an earlier node of the answer or with what
+the conversation already established: same subject and a single-valued relation with a
+different object, or objects the graph marks incompatible_with / contradicts each other.
 Anything else is rejected or left unverified and kept out of the answer.
 Nodes that depend on a rejected node are skipped.
 """
@@ -39,7 +42,10 @@ Return only JSON: {"answers": ["..."]}"""
 COMPOSE_SYSTEM = """Write the answer to the question using ONLY the verified facts listed.
 Do not add any other fact, name, date, number or detail, even if you believe it is true.
 If the verified facts do not fully answer the question, say briefly what could not be verified.
+If corrections to earlier answers are listed, point them out.
 Plain prose, concise."""
+
+EXCLUSIVE_RELATIONS = ("incompatible_with", "contradicts")
 
 
 def _norm(s: str) -> str:
@@ -99,6 +105,66 @@ def _parse_claims(data) -> list[dict]:
         c["depends_on"] = [pos[d] for d in c["depends_on"] if d in pos]
         del c["index"]
     return out
+
+
+def still_holds(store, claims: list[dict]) -> str | None:
+    """None if every accepted claim still checks out; otherwise why not."""
+    for c in claims:
+        if c.get("status", "accepted") != "accepted":
+            continue
+        if c.get("source") in ("graph", "graph-corrected"):
+            if store.validate(c["subject"], c["relation"], c["object"])["verdict"] != "supported":
+                return f"graph no longer supports {c['subject']} {c['relation']} {c['object']}"
+        elif c.get("source") in ("model", "cache") and state_cache.get(claim_key(c)) is None:
+            return f"verification of {c['subject']} {c['relation']} {c['object']} expired"
+    return None
+
+
+def _graph_backed(c: dict) -> bool:
+    return c.get("source") in ("graph", "graph-corrected")
+
+
+def _exclusive(store, a: str, b: str) -> bool:
+    return any(f["relation"] in EXCLUSIVE_RELATIONS and {f["subject"], f["object"]} == {a, b}
+               for f in store.facts_about(a))
+
+
+def _same_value(a: str, b: str) -> bool:
+    """Stricter than same_entity: near-spellings can be opposites (utopian vs dystopian)."""
+    a, b = _norm(a), _norm(b)
+    return a == b or (min(len(a), len(b)) >= 4 and (a in b or b in a))
+
+
+def _clash(store, c: dict, other: dict) -> str | None:
+    if not same_entity(c["subject"], other["subject"]) or _same_value(c["object"], other["object"]):
+        return None
+    if c["relation"] == other["relation"] and store.is_functional(c["relation"]):
+        return f"{c['relation']} is single-valued"
+    if _exclusive(store, c["object"], other["object"]):
+        return f"the graph marks {c['object']} and {other['object']} as incompatible"
+    return None
+
+
+def _check_conflicts(store, node: dict, checked: list[dict], earlier: list[dict], trace: Trace, label: str,
+                     caught: list[dict]):
+    """Generator: an accepted node that clashes with an earlier node or an earlier turn is dropped,
+    unless the graph backs it and the other side does not."""
+    pool = [(e, "consistency", "established earlier in this conversation") for e in earlier]
+    pool += [(x, "reasoning", f"node {i + 1} of this answer") for i, x in enumerate(checked) if x["status"] == "accepted"]
+    for other, kind, where in pool:
+        why = _clash(store, node, other)
+        if not why:
+            continue
+        clash = f"{_fmt(node)} clashes with {_fmt(other)}, {where} ({why})"
+        stage = "consistency" if kind == "consistency" else "factual"
+        if _graph_backed(node) and not _graph_backed(other):
+            caught.append({"type": kind, "action": "corrected", "detail": f"{clash}; the graph backs the new node"})
+            yield trace.note(stage, f"{label}: conflict", f"{clash}. Kept - the graph backs this node.", "warn")
+            return {**node, "corrects": other}
+        caught.append({"type": kind, "action": "dropped", "detail": clash})
+        yield trace.note(stage, f"{label}: conflict", f"{clash}. Dropped.", "fail")
+        return {**node, "status": "rejected", "source": kind, "reason": clash}
+    return node
 
 
 def _stored_values(store, subject: str, relation: str) -> list[str]:
@@ -166,20 +232,49 @@ def verify_node(store, c: dict, trace: Trace, label: str):
     return {**c, "status": "unverified", "source": "model", "reason": "checks disagree"}
 
 
-def answer(store, question: str, entities: list[str], trace: Trace):
-    """Generator: yields trace events, returns the tier result."""
+def _caught_by_checks(checked: list[dict]) -> list[dict]:
+    out = []
+    for c in checked:
+        if c["source"] == "graph-corrected":
+            out.append({"type": "factual", "action": "corrected",
+                        "detail": f"{c['subject']} {c['relation']} {c['original_object']} -> {c['object']} ({c['reason']})"})
+        elif c["status"] == "rejected" and c["source"] in ("graph", "model"):
+            out.append({"type": "factual", "action": "dropped", "detail": f"{_fmt(c)}: {c['reason']}"})
+    return out
+
+
+def answer(store, question: str, entities: list[str], trace: Trace, prior: dict | None = None,
+           earlier: list[dict] | None = None):
+    """Generator: yields trace events, returns the tier result.
+
+    prior: a similar question's verified state (states.find); earlier: claims this conversation established.
+    """
+    earlier = earlier or []
     ev = trace.start("graph", "Looking up known facts in the knowledge graph",
                      f"entities: {', '.join(entities) or '(none detected)'}")
     yield ev
     known, seen = [], set()
+
+    def add(f):
+        k = (f["subject"], f["relation"], f["object"])
+        if k not in seen:
+            seen.add(k)
+            known.append(f)
+
     for e in entities:
         for f in store.facts_about(e):
-            k = (f["subject"], f["relation"], f["object"])
-            if k not in seen:
-                seen.add(k)
-                known.append(f)
+            add(f)
     yield trace.settle(ev, "ok" if known else "warn",
                        f"{len(known)} stored fact(s) found" if known else "No stored facts; every node will need independent checks")
+    n_graph = len(known)
+    for f in (prior or {}).get("state", {}).get("triples", []) + earlier:
+        add(f)
+    if len(known) > n_graph:
+        yield trace.note("states", "Reusing verified reasoning",
+                         f"{len(known) - n_graph} verified fact(s) from "
+                         + (f"a similar question (“{prior['question']}”)" if prior else "")
+                         + (" and " if prior and earlier else "") + ("earlier in this conversation" if earlier else "")
+                         + " - already-verified nodes skip their checks.", "ok")
 
     ev = trace.start("factual", "Drafting the answer as a path of claims")
     yield ev
@@ -191,6 +286,7 @@ def answer(store, question: str, entities: list[str], trace: Trace):
     yield trace.settle(ev, "ok" if claims else "fail", f"{len(claims)} node(s) to verify, in order")
 
     checked: list[dict] = []
+    caught: list[dict] = []
     for i, c in enumerate(claims):
         label = f"Node {i + 1}/{len(claims)}"
         broken = [d for d in c["depends_on"] if checked[d]["status"] != "accepted"]
@@ -199,7 +295,11 @@ def answer(store, question: str, entities: list[str], trace: Trace):
                              f"Skipped: depends on node {broken[0] + 1}, which did not pass.", "fail")
             checked.append({**c, "status": "skipped", "source": None, "reason": f"depends on node {broken[0] + 1}"})
             continue
-        checked.append((yield from verify_node(store, c, trace, label)))
+        node = yield from verify_node(store, c, trace, label)
+        if node["status"] == "accepted":
+            node = yield from _check_conflicts(store, node, checked, earlier, trace, label, caught)
+        checked.append(node)
+    caught = _caught_by_checks(checked) + caught
 
     accepted = [c for c in checked if c["status"] == "accepted"]
     missing = [c for c in checked if c["status"] != "accepted"]
@@ -210,7 +310,9 @@ def answer(store, question: str, entities: list[str], trace: Trace):
     if accepted:
         facts = "\n".join(f"- {c['subject']} {c['relation'].replace('_', ' ')} {c['object']}" for c in accepted)
         gaps = "\n".join(f"- {c['subject']} {c['relation'].replace('_', ' ')} ?" for c in missing) or "(none)"
-        text = llm.chat_text(COMPOSE_SYSTEM, f"Question: {question}\n\nVerified facts:\n{facts}\n\nCould not verify:\n{gaps}")
+        fixes = "\n".join(f"- earlier: {_fmt(c['corrects'])}; now verified: {_fmt(c)}" for c in accepted if c.get("corrects"))
+        text = llm.chat_text(COMPOSE_SYSTEM, f"Question: {question}\n\nVerified facts:\n{facts}\n\nCould not verify:\n{gaps}"
+                                             + (f"\n\nCorrections to earlier answers:\n{fixes}" if fixes else ""))
         yield trace.settle(ev, "ok")
     else:
         text = "I couldn't verify any facts to answer this, so I'd rather not guess."
@@ -223,5 +325,7 @@ def answer(store, question: str, entities: list[str], trace: Trace):
         "answer": text.strip(),
         "confidence": confidence,
         "path": checked,
+        "caught": caught,
+        "withheld": sum(c["status"] == "unverified" for c in checked),
         "cacheable": bool(accepted) and not missing,
     }

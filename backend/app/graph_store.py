@@ -1,7 +1,6 @@
 """Fact graph kept in SQLite, validated with NetworkX.
 
-Swap this class for a Neo4j/FalkorDB one later; callers only use the
-methods below.
+Neo4jGraphStore (AuraDB) has the same interface; callers only use the methods below.
 """
 from typing import Literal
 
@@ -20,6 +19,11 @@ class SqliteGraphStore:
                 "ON CONFLICT(name) DO UPDATE SET functional=excluded.functional, transitive=excluded.transitive",
                 (name, int(functional), int(transitive)),
             )
+
+    def is_functional(self, relation: str) -> bool:
+        with connect() as conn:
+            row = conn.execute("SELECT functional FROM relations WHERE name=?", (relation.lower(),)).fetchone()
+        return bool(row and row["functional"])
 
     def add_fact(self, subject: str, relation: str, obj: str, source: str | None = None) -> None:
         with connect() as conn:
@@ -102,15 +106,11 @@ class SqliteGraphStore:
 
 
 def get_store():
-    """Pick the backend from GRAPH_BACKEND (sqlite | neo4j | falkordb)."""
+    """Pick the backend from GRAPH_BACKEND (sqlite | neo4j)."""
     from .config import GRAPH_BACKEND
 
     if GRAPH_BACKEND == "neo4j":
         from .neo4j_store import Neo4jGraphStore
 
         return Neo4jGraphStore()
-    if GRAPH_BACKEND == "falkordb":
-        from .falkor_store import FalkorGraphStore
-
-        return FalkorGraphStore()
     return SqliteGraphStore()

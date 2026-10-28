@@ -26,6 +26,7 @@ class FakeLLM:
     def __init__(self, monkeypatch):
         self.handlers = {}
         self.calls = []
+        self.prompts = {}
         from app import llm
 
         monkeypatch.setattr(llm, "chat_json", self._call)
@@ -35,10 +36,15 @@ class FakeLLM:
         self.handlers[system_prefix] = handler
 
     def _call(self, system, user, temperature=0):
+        from app import llm
+
         for prefix, h in self.handlers.items():
             if system.startswith(prefix):
                 self.calls.append(prefix)
-                return h(user, temperature)
+                self.prompts.setdefault(prefix, []).append(user)
+                out = h(user, temperature)
+                llm.record_usage(llm.estimate_tokens(system + user), llm.estimate_tokens(str(out)))
+                return out
         raise AssertionError(f"unexpected LLM call: {system[:60]!r}")
 
 

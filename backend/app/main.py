@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import ingest as ingest_mod, llm, state_cache
+from . import ingest as ingest_mod, llm, metrics, state_cache
 from .db import connect, init_db
 from .engine import pipeline
 from .graph_store import get_store
@@ -182,13 +182,33 @@ def reject_item(item_id: int):
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     mode: Literal["auto", "conservative", "balanced", "aggressive"] = "auto"  # reasoning-tier strictness
+    conversation_id: str | None = Field(default=None, max_length=64)
+
+
+class Feedback(BaseModel):
+    turn_id: int
+    helpful: bool
+
+
+@app.post("/feedback")
+def feedback(f: Feedback):
+    """A user verdict on an answer; the learned router counts it as that turn's outcome."""
+    with connect() as conn:
+        if conn.execute("UPDATE turns SET feedback=? WHERE id=?", (int(f.helpful), f.turn_id)).rowcount == 0:
+            raise HTTPException(404, "no such turn")
+    return {"ok": True}
+
+
+@app.get("/metrics")
+def get_metrics():
+    return metrics.summary()
 
 
 @app.post("/chat/stream")
 def chat_stream(req: ChatRequest):
     """Server-sent events: live thinking steps, then 'Processing complete', then the answer."""
     def events():
-        for ev in pipeline.run(store, req.question, req.mode):
+        for ev in pipeline.run(store, req.question, req.mode, conversation_id=req.conversation_id):
             yield f"data: {json.dumps(ev)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream",
@@ -199,7 +219,7 @@ def chat_stream(req: ChatRequest):
 def chat(req: ChatRequest):
     """Same pipeline, collected into one response."""
     steps, answer, final = {}, [], None
-    for ev in pipeline.run(store, req.question, req.mode, typing_delay=0):
+    for ev in pipeline.run(store, req.question, req.mode, typing_delay=0, conversation_id=req.conversation_id):
         if ev["type"] == "step":
             steps[ev["id"]] = ev
         elif ev["type"] == "answer":
