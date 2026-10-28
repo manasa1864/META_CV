@@ -21,6 +21,11 @@ def put(key: str, state: dict) -> None:
         )
 
 
+def delete(key: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM state_cache WHERE key=?", (key,))
+
+
 def get(key: str) -> dict | None:
     with connect() as conn:
         row = conn.execute("SELECT value FROM state_cache WHERE key=?", (key,)).fetchone()

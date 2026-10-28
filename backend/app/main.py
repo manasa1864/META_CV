@@ -1,10 +1,14 @@
+import json
 from contextlib import asynccontextmanager
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 from . import ingest as ingest_mod, llm, state_cache
 from .db import connect, init_db
+from .engine import pipeline
 from .graph_store import get_store
 
 store = get_store()
@@ -173,3 +177,35 @@ def reject_item(item_id: int):
     with connect() as conn:
         conn.execute("UPDATE review_queue SET status='rejected' WHERE id=?", (item_id,))
     return {"id": item_id, "status": "rejected"}
+
+
+class ChatRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=4000)
+    mode: Literal["auto", "conservative", "balanced", "aggressive"] = "auto"  # reasoning-tier strictness
+
+
+@app.post("/chat/stream")
+def chat_stream(req: ChatRequest):
+    """Server-sent events: live thinking steps, then 'Processing complete', then the answer."""
+    def events():
+        for ev in pipeline.run(store, req.question, req.mode):
+            yield f"data: {json.dumps(ev)}\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.post("/chat")
+def chat(req: ChatRequest):
+    """Same pipeline, collected into one response."""
+    steps, answer, final = {}, [], None
+    for ev in pipeline.run(store, req.question, req.mode, typing_delay=0):
+        if ev["type"] == "step":
+            steps[ev["id"]] = ev
+        elif ev["type"] == "answer":
+            answer.append(ev["delta"])
+        elif ev["type"] == "final":
+            final = ev
+        elif ev["type"] == "error":
+            raise HTTPException(503 if "Set META_" in ev["message"] else 500, ev["message"])
+    return {"answer": "".join(answer), "thinking": list(steps.values()), **(final or {})}

@@ -57,6 +57,18 @@ class Neo4jGraphStore:
         )
         return [dict(r) for r in rows]
 
+    def facts_about(self, entity: str, limit: int = 50) -> list[dict]:
+        """Facts touching an entity: exact name first, partial match as a fallback."""
+        e = entity.lower().strip()
+        q = (
+            "MATCH (a:Entity)-[r]->(b:Entity) WHERE {cond} "
+            "RETURN a.name AS subject, toLower(type(r)) AS relation, b.name AS object LIMIT $limit"
+        )
+        rows = self._run(q.format(cond="(a.name = $e OR b.name = $e)"), e=e, limit=limit)
+        if not rows and len(e) >= 3:
+            rows = self._run(q.format(cond="(a.name CONTAINS $e OR b.name CONTAINS $e)"), e=e, limit=limit)
+        return [dict(r) for r in rows]
+
     def relation_stats(self) -> list[dict]:
         """Usage per relation, plus rules the data suggests (never applied automatically)."""
         rows = self._run(

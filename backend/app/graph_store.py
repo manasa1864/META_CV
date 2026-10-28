@@ -36,6 +36,21 @@ class SqliteGraphStore:
             ).fetchall()
         return [{"relation": r["relation"].upper(), "source": r["subject"], "target": r["object"], "count": 1} for r in rows]
 
+    def facts_about(self, entity: str, limit: int = 50) -> list[dict]:
+        """Facts touching an entity: exact name first, partial match as a fallback."""
+        e = entity.lower().strip()
+        with connect() as conn:
+            rows = conn.execute(
+                "SELECT subject, relation, object FROM facts WHERE subject=? OR object=? LIMIT ?", (e, e, limit)
+            ).fetchall()
+            if not rows and len(e) >= 3:
+                like = f"%{e}%"
+                rows = conn.execute(
+                    "SELECT subject, relation, object FROM facts WHERE subject LIKE ? OR object LIKE ? LIMIT ?",
+                    (like, like, limit),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
     def relation_stats(self) -> list[dict]:
         with connect() as conn:
             rows = conn.execute(

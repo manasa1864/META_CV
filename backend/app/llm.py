@@ -32,13 +32,17 @@ def _parse_json(text: str):
         raise LLMBadOutput(f"model returned invalid JSON: {e}") from e
 
 
-def chat_json(system: str, user: str):
+def chat_text(system: str, user: str, temperature: float = 0) -> str:
     resp = _client().chat.completions.create(
         model=config.META_MODEL,
-        temperature=0,
+        temperature=temperature,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
     )
-    return _parse_json(resp.choices[0].message.content or "")
+    return resp.choices[0].message.content or ""
+
+
+def chat_json(system: str, user: str, temperature: float = 0):
+    return _parse_json(chat_text(system, user, temperature))
 
 
 def normalize_relation(name: str) -> str | None:

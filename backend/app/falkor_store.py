@@ -46,6 +46,18 @@ class FalkorGraphStore:
             {"s": subject.lower(), "o": obj.lower()},
         )
 
+    def facts_about(self, entity: str, limit: int = 50) -> list[dict]:
+        """Facts touching an entity: exact name first, partial match as a fallback."""
+        e = entity.lower().strip()
+        q = (
+            "MATCH (a:Entity)-[r]->(b:Entity) WHERE {cond} "
+            "RETURN a.name, toLower(type(r)), b.name LIMIT $limit"
+        )
+        rows = self.g.query(q.format(cond="(a.name = $e OR b.name = $e)"), {"e": e, "limit": limit}).result_set
+        if not rows and len(e) >= 3:
+            rows = self.g.query(q.format(cond="(a.name CONTAINS $e OR b.name CONTAINS $e)"), {"e": e, "limit": limit}).result_set
+        return [{"subject": s, "relation": r, "object": o} for s, r, o in rows]
+
     def validate(self, subject: str, relation: str, obj: str) -> dict:
         s, o, r = subject.lower(), obj.lower(), relation.lower()
         t = _edge_type(r)
