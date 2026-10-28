@@ -1,0 +1,21 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# environments and build output
+venv/
+.venv/
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# local data (recreated by the app, seed script or benchmark)
+*.db
+backend/bench_results/
+
+# OS
+.DS_Store
+Thumbs.db
