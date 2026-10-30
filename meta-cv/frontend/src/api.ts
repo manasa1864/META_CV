@@ -13,6 +13,22 @@ export type Step = {
 
 export type Caught = { type: HType; action: 'corrected' | 'dropped' | 'flagged'; detail: string }
 
+/** One node of the verified path: a graph claim (factual / consistency) or a solution step (reasoning). */
+export type PathItem = {
+  kind?: 'claim' | 'answer'
+  subject?: string
+  relation?: string
+  object?: string
+  status?: 'accepted' | 'rejected' | 'unverified' | 'skipped'
+  source?: string | null
+  reason?: string
+  text?: string
+  expression?: string
+  result?: string
+  question?: string
+  final_answer?: string
+}
+
 export type Final = {
   type: 'final'
   turn_id: number
@@ -27,6 +43,7 @@ export type Final = {
   withheld: number
   tokens: { prompt: number; completion: number; total: number; calls: number; saved: number }
   router: { scores: Record<string, number>; learned: boolean; evidence: number } | null
+  path: PathItem[]
 }
 
 export type ChatEvent =
