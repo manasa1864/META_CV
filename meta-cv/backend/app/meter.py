@@ -1,10 +1,12 @@
 """Per-question accounting: LLM calls and tokens, graph round trips, and the budget they must stay within."""
+import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 
 from . import config
 
 _meter: ContextVar[dict | None] = ContextVar("meter", default=None)
+_lock = threading.Lock()  # checks run in parallel (engine/parallel.py) and share one meter per question
 
 
 class BudgetExceeded(RuntimeError):
@@ -61,16 +63,18 @@ def before_llm_call() -> None:
 def record_llm(prompt: int, completion: int) -> None:
     m = _meter.get()
     if m is not None:
-        m["prompt"] += prompt
-        m["completion"] += completion
-        m["calls"] += 1
+        with _lock:
+            m["prompt"] += prompt
+            m["completion"] += completion
+            m["calls"] += 1
 
 
 def record_graph(n: int = 1) -> None:
     m = _meter.get()
     if m is None:
         return
-    m["graph"] += n
+    with _lock:
+        m["graph"] += n
     lim = (m.get("limits") or {}).get("graph")
     if lim and m["graph"] > lim:
         raise BudgetExceeded("graph query", lim)

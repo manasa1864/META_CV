@@ -60,6 +60,14 @@ GRAPH_RECOVER_SECONDS = _num("GRAPH_RECOVER_SECONDS", 60)      # how often a deg
 META_API_KEY = _env("META_API_KEY")
 META_BASE_URL = _env("META_BASE_URL")
 META_MODEL = _env("META_MODEL")
+# Optional second model for the independent checks (judge + blind probe). Unset: the main model checks its
+# own drafts. Base URL and key default to the main ones, so a second model on the same API needs only the name.
+META_JUDGE_MODEL = _env("META_JUDGE_MODEL")
+META_JUDGE_BASE_URL = _env("META_JUDGE_BASE_URL")
+META_JUDGE_API_KEY = _env("META_JUDGE_API_KEY")
+# Outside evidence for claims the graph does not hold (engine/wikidata.py). 0 turns the lookup off.
+WIKIDATA_LOOKUP = _env("WIKIDATA_LOOKUP", default="1") != "0"
+WIKIDATA_TIMEOUT = _num("WIKIDATA_TIMEOUT", 6)
 LLM_TIMEOUT = _num("LLM_TIMEOUT", 30)
 LLM_RETRIES = _int("LLM_RETRIES", 3)
 LLM_BREAKER_FAILURES = _int("LLM_BREAKER_FAILURES", 5)        # consecutive failures that open the breaker
@@ -75,6 +83,7 @@ TRUSTED_SOURCES = {s.strip() for s in _env("TRUSTED_SOURCES", default="seed").sp
 
 CLAIM_TTL_HOURS = _num("CLAIM_TTL_HOURS", 24)                  # model-verified claims expire after this
 STALE_DAYS = _num("STALE_DAYS", 365)                           # audit flags facts not re-verified for longer
+FRESH_DAYS = _num("FRESH_DAYS", 30)                            # questions about the present: older facts get a date note
 STATE_MAX_ROWS = _int("STATE_MAX_ROWS", 5000)                  # cap on reasoning_states (least-hit pruned)
 STATE_CACHE_MAX_AGE_DAYS = _num("STATE_CACHE_MAX_AGE_DAYS", 30)
 TURNS_RETENTION_DAYS = _num("TURNS_RETENTION_DAYS", 0)         # 0 keeps every turn
@@ -96,6 +105,7 @@ USER_SIGNAL_WEIGHT = _num("USER_SIGNAL_WEIGHT", 1.0)
 MAX_LLM_CALLS = _int("MAX_LLM_CALLS", 40)
 MAX_GRAPH_CALLS = _int("MAX_GRAPH_CALLS", 400)
 MAX_TOKENS = _int("MAX_TOKENS", 60000)
+CHECK_WORKERS = _int("CHECK_WORKERS", 6)   # model checks run at the same time (engine/parallel.py); 1 = one by one
 
 # Global breaker: switch to verified-only mode when recent turns look unhealthy
 BREAKER_WINDOW = _int("BREAKER_WINDOW", 20)

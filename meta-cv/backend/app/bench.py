@@ -42,6 +42,7 @@ ABLATIONS = {
     "no_reuse": {"flags": {}, "reuse": False},
     "no_guard": {"flags": {"no_guard": True}, "reuse": True},
     "no_compression": {"flags": {"no_compression": True}, "reuse": True},
+    "no_graph_first": {"flags": {"no_graph_first": True}, "reuse": True},
 }
 SYNTHETIC_BATCH = "bench-synthetic"
 

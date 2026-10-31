@@ -10,10 +10,11 @@ from .trace import Trace
 
 def answer(store, question: str, entities: list[str], mode: str, trace: Trace, prior: dict | None = None,
            earlier_claims: list[dict] | None = None, earlier_answers: list[dict] | None = None,
-           verified_only: bool = False):
+           verified_only: bool = False, time_sensitive: bool = False):
     yield trace.note("planner", "Mixed question: facts first, then the calculation",
                      "The facts it needs are verified before any arithmetic is allowed to use them.")
-    checked, found = yield from factual.walk(store, question, entities, trace, None, earlier_claims, verified_only)
+    checked, found = yield from factual.walk(store, question, entities, trace, None, earlier_claims, verified_only,
+                                             time_sensitive)
     premises = [c for c in checked if c["status"] == "accepted"]
     missing = [c for c in checked if c["status"] != "accepted"]
     for c in missing:

@@ -158,22 +158,24 @@ def _solve(store, question: str, mode: str, conversation_id: str | None, force_t
             result = res
 
     prior = None
+    current = bool(r.get("time_sensitive"))  # asks about the present: facts must still be current (temporal.py)
     if result is None:
-        prior = states.find(tier, q) if reuse else None
+        prior = states.find(tier, q) if reuse and not current else None
         mixed = r["needs"]["facts"] and r["needs"]["calculation"] and bool(r["entities"]) and not force_tier
         if mixed:
             result = yield from planner.answer(store, q, r["entities"], reasoning_mode or "balanced", trace, prior,
-                                               memory.claims(hist), memory.answers(hist), verified_only)
+                                               memory.claims(hist), memory.answers(hist), verified_only, current)
         elif tier == "factual":
-            result = yield from factual.answer(store, q, r["entities"], trace, prior, memory.claims(hist), verified_only)
+            result = yield from factual.answer(store, q, r["entities"], trace, prior, memory.claims(hist), verified_only,
+                                               current)
         else:
             result = yield from reasoning.answer(q, reasoning_mode or "balanced", trace, prior, memory.answers(hist))
 
     result = _false_premise(r, result) or result
     cacheable = result.pop("cacheable") and reuse and r["type"] != "consistency" and q == question \
-        and not result.get("stopped")
+        and not result.get("stopped") and not current
     tokens = meter_["prompt"] + meter_["completion"]
-    if reuse and not result.get("stopped") and (state := states.state_of(result)):
+    if reuse and not result.get("stopped") and not current and (state := states.state_of(result)):
         states.save(result["tier"], q, state, tokens)
     if cacheable:
         cache.save(question, {**result, "hallucination_type": r["type"], "tokens": tokens})

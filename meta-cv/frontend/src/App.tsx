@@ -30,6 +30,7 @@ import './App.css'
 
 const MetricsView = lazy(() => import('./Metrics'))
 const ResultsView = lazy(() => import('./Results'))
+const ReviewView = lazy(() => import('./Review'))
 
 type Phase = 'thinking' | 'answering' | 'done' | 'error'
 type BloopMood = 'greeting' | 'thinking' | 'supported' | 'uncertain'
@@ -59,7 +60,7 @@ type Assistant = {
   retry?: string
 }
 type Message = { id: number; role: 'user'; text: string } | Assistant
-type View = 'chat' | 'metrics' | 'results'
+type View = 'chat' | 'metrics' | 'results' | 'review'
 
 const INTRO_KEY = 'prism-intro-autoplay' // Settings switch, on by default
 const INTRO_SEEN_KEY = 'prism-intro-v4' // the intro plays once per browser session
@@ -79,7 +80,7 @@ function store(key: string, value: string) {
     /* private mode: the choice lasts for this visit only */
   }
 }
-const WAVE_SRC = '/prism-wave.png'
+const WAVE_SRC = '/prism-wave.webp'
 
 const STAGES: Record<string, string> = {
   cache: 'Verified-path cache',
@@ -93,6 +94,7 @@ const STAGES: Record<string, string> = {
   compression: 'Reusing verified work',
   planner: 'Facts first, then the calculation',
   guard: 'Faithfulness check',
+  temporal: 'Is it still current?',
   audit: 'Graph health',
   health: 'Verified-only mode',
   budget: 'Budget',
@@ -860,6 +862,8 @@ const CLAIM_TAGS: Record<string, [string, string]> = {
   'graph-corrected': ['Corrected', 'sun'],
   model: ['Confirmed', 'sky'],
   cache: ['Cached', 'lav'],
+  wikidata: ['Wikidata', 'mint'],
+  'wikidata-corrected': ['Corrected', 'sun'],
 }
 
 function pathRow(p: PathItem): { title: string; sub: string; tag: string; tone: string } | null {
@@ -1229,7 +1233,11 @@ function Settings({
   )
 }
 
-const pathView = (): View => (window.location.pathname.replace(/\/+$/, '') === '/results' ? 'results' : 'chat')
+const PATHS: Partial<Record<View, string>> = { results: '/results', review: '/review' }
+const pathView = (): View => {
+  const path = window.location.pathname.replace(/\/+$/, '')
+  return (Object.keys(PATHS) as View[]).find((v) => PATHS[v] === path) ?? 'chat'
+}
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false }
@@ -1310,11 +1318,11 @@ function PrismApp() {
   }, [])
 
   useEffect(() => {
-    document.title = view === 'results' ? 'Prism · Results' : view === 'metrics' ? 'Prism · Metrics' : 'Prism · verified answers'
+    document.title = view === 'chat' ? 'Prism · verified answers' : `Prism · ${view[0].toUpperCase()}${view.slice(1)}`
   }, [view])
 
   function setView(next: View) {
-    const path = next === 'results' ? '/results' : '/'
+    const path = PATHS[next] ?? '/'
     if (window.location.pathname !== path) window.history.pushState(null, '', path)
     setViewState(next)
   }
@@ -1491,6 +1499,9 @@ function PrismApp() {
             <Button className={view === 'results' ? 'active' : ''} onClick={() => setView('results')}>
               Results
             </Button>
+            <Button className={view === 'review' ? 'active' : ''} onClick={() => setView('review')}>
+              Review
+            </Button>
           </nav>
           {evidence && (
             <span className="evidence-on">
@@ -1517,6 +1528,14 @@ function PrismApp() {
         <main className="metrics-view">
           <Suspense fallback={<div className="metrics"><p className="card-note">Loading…</p></div>}>
             <ResultsView />
+          </Suspense>
+        </main>
+      )}
+
+      {view === 'review' && (
+        <main className="metrics-view">
+          <Suspense fallback={<div className="metrics"><p className="card-note">Loading…</p></div>}>
+            <ReviewView />
           </Suspense>
         </main>
       )}

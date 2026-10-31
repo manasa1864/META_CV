@@ -472,7 +472,7 @@ def test_results_and_replays_endpoints(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "REPLAYS_DIR", tmp_path)
     (tmp_path / "false-premise.json").write_text(json.dumps({"question": "q", "label": "Recorded run", "events": []}))
     with TestClient(main.app) as client:
-        assert client.get("/results/latest").status_code == 404
+        assert client.get("/results/latest").json() is None
         assert client.get("/replays").json()[0]["id"] == "false-premise"
         assert client.get("/replays/false-premise").json()["question"] == "q"
         assert client.get("/replays/..%2Fsecret").status_code == 404

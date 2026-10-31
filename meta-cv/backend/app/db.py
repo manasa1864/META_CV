@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS facts (
     verified_at REAL,
     added_by    TEXT,
     batch_id    TEXT,
+    valid_from  TEXT,                       -- when the fact became true: YYYY, YYYY-MM or YYYY-MM-DD
+    valid_to    TEXT,                       -- when it stopped being true (empty: still true)
     PRIMARY KEY (subject, relation, object)
 );
 CREATE INDEX IF NOT EXISTS facts_relation_subject ON facts(relation, subject);
@@ -122,6 +124,8 @@ MIGRATIONS = [
     ("facts", "verified_at", "REAL"),
     ("facts", "added_by", "TEXT"),
     ("facts", "batch_id", "TEXT"),
+    ("facts", "valid_from", "TEXT"),
+    ("facts", "valid_to", "TEXT"),
     ("relations", "acyclic", "INTEGER NOT NULL DEFAULT 0"),
     ("state_cache", "expires_at", "REAL"),
     ("turns", "outcome", "TEXT"),            # correct | abstained | hallucinated | unknown

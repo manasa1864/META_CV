@@ -189,10 +189,12 @@ class Neo4jGraphStore:
 
     # facts -----------------------------------------------------------------
     def add_fact(self, subject: str, relation: str, obj: str, source: str | None = None, *,
-                 added_by: str | None = None, batch_id: str | None = None) -> bool:
+                 added_by: str | None = None, batch_id: str | None = None, valid_from: str | None = None,
+                 valid_to: str | None = None) -> bool:
         """Idempotent: re-adding the same fact from the same source does not inflate `count`."""
         return self.add_facts([{"subject": subject, "relation": relation, "object": obj, "source": source,
-                                "added_by": added_by, "batch_id": batch_id}]) == 1
+                                "added_by": added_by, "batch_id": batch_id, "valid_from": valid_from,
+                                "valid_to": valid_to}]) == 1
 
     def add_facts(self, rows: list[dict]) -> int:
         """UNWIND batches, one query per relation type and batch. Returns how many facts were new."""
@@ -200,7 +202,8 @@ class Neo4jGraphStore:
         for r in rows:
             groups[rel_name(r["relation"])].append({
                 "s": normalize(r["subject"]), "o": normalize(r["object"]), "src": r.get("source") or "unknown",
-                "by": r.get("added_by"), "batch": r.get("batch_id")})
+                "by": r.get("added_by"), "batch": r.get("batch_id"),
+                "vf": r.get("valid_from") or None, "vt": r.get("valid_to") or None})
         created = 0
         for rel, items in groups.items():
             for i in range(0, len(items), BATCH):
@@ -216,7 +219,8 @@ class Neo4jGraphStore:
                     "e.added_by = row.by, e.batch_id = row.batch" + (", e.tag = $tag, e.run_id = $run_id" if self.tag else "") + " "
                     "ON MATCH SET e.verified_at = datetime(), e.sources = CASE WHEN row.src IN coalesce(e.sources, []) "
                     "THEN e.sources ELSE coalesce(e.sources, []) + row.src END "
-                    "SET e.count = size(e.sources)",
+                    "SET e.count = size(e.sources), e.valid_from = coalesce(row.vf, e.valid_from), "
+                    "e.valid_to = coalesce(row.vt, e.valid_to)",
                     write=True, rows=items[i:i + BATCH], tag=self.tag, run_id=self.run_id)
                 created += summary.counters.relationships_created
         if groups:
@@ -228,6 +232,14 @@ class Neo4jGraphStore:
                 if n not in self._rules.get():
                     self._rules.put(n, dict(NO_FLAGS))
         return created
+
+    def fact_info(self, subject: str, relation: str, obj: str) -> dict | None:
+        """Provenance and validity of one stored fact: verified_at (epoch seconds), valid_from, valid_to, source."""
+        rows = self._run(f"MATCH (:{self.E} {{name:$s}})-[e:{rel_name(relation).upper()}]->(:{self.E} {{name:$o}}) "
+                         "RETURN e.verified_at.epochSeconds AS verified_at, e.valid_from AS valid_from, "
+                         "e.valid_to AS valid_to, e.source AS source LIMIT 1",
+                         s=self.resolve(subject), o=self.resolve(obj))
+        return dict(rows[0]) if rows else None
 
     def delete_batch(self, batch_id: str) -> int:
         """Remove only the edges this batch created (nodes are kept: they may be shared)."""
@@ -272,7 +284,8 @@ class Neo4jGraphStore:
         skip = 0
         while True:
             rows = self._run(f"MATCH (a:{self.E})-[r]->(b:{self.E}) RETURN a.name AS subject, toLower(type(r)) AS relation, "
-                             "b.name AS object, r.source AS source, r.added_by AS added_by, r.batch_id AS batch_id "
+                             "b.name AS object, r.source AS source, r.added_by AS added_by, r.batch_id AS batch_id, "
+                             "r.valid_from AS valid_from, r.valid_to AS valid_to "
                              "ORDER BY elementId(r) SKIP $skip LIMIT $n", skip=skip, n=page)
             if not rows:
                 return

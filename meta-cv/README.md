@@ -6,12 +6,13 @@ An adaptive chatbot that tries to prevent hallucinations by design.
 - **Checking:** nothing is said until it has been checked, and the system stops instead of guessing when it cannot verify.
 - **Learning:** every outcome is logged, so the router learns which tier works.
 - **Live trace:** the UI (Prism, with Bloop) streams every check ("See the thinking"), then the answer and its evidence.
+- **Review page** (`/review`): facts confirmed outside the graph, writes the graph quarantined, and proposed relation rules wait there to be accepted, released, discarded, approved or rejected. Writes follow `ADMIN_TOKEN` / judge mode (`/status` reports `writes`).
 
 ```
 META/                        (the repository root)
 └── meta-cv/
     ├── backend/             FastAPI app: graph stores, verification engine, LLM client, tools, tests
-    ├── frontend/            React + Vite UI: chat, metrics, results page
+    ├── frontend/            React + Vite UI: chat, metrics, results and review pages
     ├── bench_data/          benchmark and taxonomy question sets (JSON)
     ├── results/             measured benchmark / scale / taxonomy results (committed)
     ├── replays/             recorded real runs for Replay mode (committed)
@@ -54,11 +55,16 @@ question (+ conversation)
   -> learned router picks the tier                                           engine/router.py
   -> refuse if the last audit found a conflict about these entities           audit.py
   -> tier
-       factual      claims verified node by node: graph, then judge + blind probe     engine/factual.py
-       reasoning    arithmetic machine-checked, logic checked, backtracking,
-                    independent solutions must agree                                  engine/reasoning.py
-       consistency  from what the conversation verified; derived numbers must
-                    pass the arithmetic check, or it re-asks a standalone question    engine/memory.py
+       factual      graph first: the question split into parts, each part the graph
+                    can answer taken from the graph (every stored value); the rest
+                    drafted and verified node by node: graph, then judge + blind
+                    probe; unanswered parts reported                                  engine/decompose.py,
+                                                                                      engine/factual.py
+       reasoning    arithmetic machine-checked, every number traced to its source,
+                    logic checked, backtracking, independent solutions must agree    engine/reasoning.py
+       consistency  from what the conversation verified; derived numbers must pass
+                    the arithmetic check and trace to the cited statements, or it
+                    re-asks a standalone question                                     engine/memory.py
        mixed        facts first, then the calculation from those verified premises   engine/planner.py
   -> faithfulness guard: names, numbers and claims in the answer must come
      from verified facts; regenerate once, else print the verified facts verbatim     engine/guardrails.py
@@ -79,7 +85,7 @@ Risk codes are adapted from the factuality / faithfulness split in Huang et al.,
 | `faithful.logic` | bad arithmetic or inference | reasoning |
 | `faithful.premise` | calculation on an unverified fact | planner + reasoning |
 | `faithful.context` | contradicts earlier turns | consistency |
-| `temporal.stale` | may have changed since verified | factual + audit |
+| `temporal.stale` | may have changed since verified | factual (freshness review) + audit |
 
 ### Stop conditions
 
@@ -91,6 +97,203 @@ The system answers "I can't answer this reliably" (and says why) when:
 5. **budget:** the per-question budget (LLM calls, tokens, graph queries) ran out.
 
 A global breaker switches to **verified-only mode** when recent answers are mostly rejections, or when the model or graph keep failing. In that mode only graph facts count, and a banner says so.
+
+### Plots as ordered events
+
+"What happens in this book" is verified step by step, like any other fact (`engine/plots.py`).
+
+**How a plot is stored:** as events. Each event is an entity named by a short description, with:
+
+| fact | meaning |
+|---|---|
+| `(event, event_in, work)` | the event belongs to the work |
+| `(event, event_order, "n")` | its place in the story |
+| `(event, involves, character)` | who takes part |
+| `(event, follows, earlier event)` | it comes after the previous event (transitive and acyclic) |
+
+**How plot questions are answered:**
+- **Graph first:** the question is split into the lookup `(?, event_in, work)`. That returns every stored
+  event, sorted into story order and annotated "event 3 of 9; involves …".
+- **Told in order:** the answer is written in that order, from the graph alone.
+- **Order claims:** "X happens after Y" is checked along the whole `follows` chain. A claim that reverses the
+  order is contradicted, with no model call. The same check works for any acyclic relation, e.g. `located_in`.
+- **Type checks:** an event cannot involve a place, or belong to a person.
+
+**How plots get in:** through the write gate, either from the seed (Pride and Prejudice, nine events) or
+with `POST /plots` (admin):
+
+```json
+{"work": "...", "events": [{"event": "...", "involves": ["..."]}], "source": "..."}
+```
+
+The events are listed in story order.
+
+**Limits:** the order is a single main storyline; parallel subplots are not modelled. Plots of books that
+are not in the graph are drafted and checked one claim at a time, as before, with no order to check against.
+
+### Independent checks: outside evidence and a separate judge
+
+Outside the graph, a claim used to be accepted only by the same model that drafted it: a judge, plus a blind
+probe. That model's mistakes repeat across all three calls. Two things now break that loop.
+
+**Wikidata evidence** (`engine/wikidata.py`). This applies to relations Wikidata records: birth and death
+place and year, author, publication date, characters, location, spouse, parents, awards, genre, CEO and others.
+1. The subject's item is found by exact name. The mapped property is read, and its values are compared exactly
+   with the claim (label or alias, or the year of a date).
+2. **The result:**
+   - **A match** accepts the claim (source `wikidata`, with the item's QID). It counts as evidence like a graph
+     fact, so confidence can be "high".
+   - **A mismatch on a single-valued fact** (birth or death place or date) corrects the claim to the value
+     Wikidata holds (`wikidata-corrected`). If Wikidata holds several values, the claim is dropped.
+   - **Anything else is "unknown":** no exact item, no value, a relation that is not mapped, or Wikidata being
+     unreachable. Then the model checks decide, as before. It never raises.
+3. **Graph writes:** facts confirmed by Wikidata go to the review queue. A human still decides what enters
+   the graph.
+4. **Speed:** the lookup runs at the same time as the judge and probe. When it decides, those calls are cancelled.
+
+**A separate judge model.** Set `META_JUDGE_MODEL`, plus `META_JUDGE_BASE_URL` / `META_JUDGE_API_KEY` if it
+lives on another API. The judge and blind probe then run on that model. The trace says which model judged,
+and whether it is the drafter.
+
+**Measured live** (12 claims about the seed's people and books):
+- **True claims:** all eight confirmed.
+- **Wrong single-valued claims:** "born in Bath", "birth year 1897" and "born in New York" are each
+  contradicted with the true value.
+- **No loose matches:** "located in York" does not pass for Warsaw.
+- **Speed:** about 2 s for a new subject, 0.4 s cached. Tests use a mocked Wikidata, never the network.
+
+**Privacy:** only the claim's names and the property go to wikidata.org. `WIKIDATA_LOOKUP=0` turns it off.
+
+### Faster checking
+
+A claim the graph does not hold costs two model calls: the independent judgment and the blind probe.
+Before, every such claim waited for both calls in turn. Now (`engine/parallel.py`, `factual.py`):
+- **Judge and probe together:** a claim's judge and blind probe run at the same time. They never see
+  each other's answer, so nothing about the check changes.
+- **Independent claims in parallel:** claims that depend on no other node have their model checks started
+  together as soon as the draft is in. Whatever the other nodes turn out to be, those checks are needed anyway.
+- **Order is unchanged:** nodes are still awaited, accepted, shown and conflict-checked one by one, in order.
+- **Dependent claims wait:** a node that depends on another is checked only after that node has passed,
+  so no call is spent on a node that will be skipped.
+
+**Measured** with the scripted model, each call taking 0.3 s, on four independent claims: 2.65 s one by
+one, 0.44 s in parallel, with the same answer.
+
+**Settings:**
+- `CHECK_WORKERS` (default 6) is the size of the shared pool. Lower it if the model API rate-limits you;
+  `1` restores one-by-one checking.
+- Every parallel call is counted on its question's meter, so the per-question budgets still hold.
+
+### Type checks
+
+`engine/entity_types.py` rejects claims whose subject or object is the wrong kind of thing, for example
+"Jane Austen born in 1775" (a year where a place belongs) or "Pride and Prejudice written by Warsaw"
+(a place where a person belongs).
+
+**Signatures:** `SIGNATURES` says what each common relation connects:
+- `born_in`: person → place
+- `birth_year`: person → year
+- `written_by`: work → person
+- `located_in`: place → place
+- `ceo_of`: person → organisation, and others
+
+**Where an entity's type comes from:** the graph, never the model.
+- An explicit `(x, entity_type, person)` fact wins.
+- Otherwise it is inferred from the facts the entity already takes part in: the subject of `born_in` is a
+  person, the object of `located_in` is a place.
+- Mixed evidence means "unknown".
+
+**When a claim is rejected:** only on clear evidence.
+- A year slot gets something with no year in it.
+- An entity slot gets something the graph types differently.
+- A person or place slot gets a bare number.
+
+Unknown types pass, relations without a signature pass, and titles that look like years ("1984") are
+fine where a work belongs.
+
+**Where it runs:**
+- **Claim verification:** after the graph lookup and before any model call. A wrong-type claim the graph
+  knows nothing about is dropped at once (`factual.relation_error`), with no judge or probe call. A claim
+  the graph can correct is still corrected first.
+- **The write gate:** wrong-type facts are quarantined instead of written.
+
+The seed and the synthetic benchmark set pass with nothing flagged. To cover more relations, add them to
+`SIGNATURES`.
+
+### Time-sensitive facts
+
+Facts that change (offices, CEOs, records) can carry a validity period: `valid_from` / `valid_to` as `YYYY`,
+`YYYY-MM` or `YYYY-MM-DD`, where an empty `valid_to` means still true. Set them through `/facts`, the write
+gate or `store.add_fact(..., valid_from=, valid_to=)`. Both stores keep them, and `export_snapshot` copies them.
+
+Every accepted graph fact with a period carries it into the answer ("from 2015 until 2021"), so an ended
+fact is never phrased as current.
+
+When the router marks a question time-sensitive ("current", "latest", "now"), `engine/temporal.py` reviews
+every accepted fact before the answer is written:
+
+| fact | what happens |
+|---|---|
+| graph fact whose `valid_to` has passed | dropped as not current (`temporal.stale`, dropped). The answer may say it ended, never that it holds |
+| graph fact not re-verified within `FRESH_DAYS` (default 30) | kept with "as of <date>"; confidence at most medium |
+| claim confirmed only by the model | kept with "from model knowledge, which may be out of date"; confidence at most medium |
+| current graph fact verified recently | used normally |
+
+Two kinds of reuse are skipped for time-sensitive questions, because the answer may have changed since:
+- the answer is not cached for exact repeats;
+- answers from similar questions are not reused.
+
+Limits:
+- **Periods are only as good as the data:** a fact stored without `valid_to` counts as still true.
+- **No automatic dates:** ingest does not yet extract periods from text.
+- **The seed has no time-varying facts.**
+- **No point-in-time questions:** "who was CEO in 2015" is answered from the periods in the text, not by
+  filtering on the date.
+
+### Graph-first answers
+
+Drafting first and checking second has a blind spot: the model chooses which facts to claim, so an answer can be
+fully verified and still incomplete. Two characters named, four in the graph, and "high" confidence anyway.
+So the factual tier asks the graph first (`engine/decompose.py`):
+1. **Split:** one model call turns the question into parts. Each part is a triple with one unknown (a lookup),
+   or none (a yes/no check). `#n` refers to an earlier part's answer, e.g. `(#1, born_in, ?)` for "where was
+   the author born".
+2. **Fill from the graph:** a lookup returns *every* stored value for that part. A yes/no part the graph
+   contradicts comes back with the stored value (corrected), and the false-premise stop condition sees it.
+3. **Draft only the rest:** the model is shown what the graph already answered and asked only for the remaining
+   parts. Its claims are verified node by node as before. If every part came from the graph, there is no draft
+   and no judge or probe call at all.
+4. **Coverage check:** a part that still has no verified answer becomes an "unverified" node. The answer says
+   it could not verify that part, and confidence cannot be "high".
+
+A drafted claim that clashes with a graph answer is dropped. One that repeats a graph answer is not
+re-checked.
+
+Costs and limits:
+- **One extra model call** per factual question (the split). It saves the draft and every judge and probe
+  call when the graph covers the question.
+- **Lookups follow direct edges only:** "which continent is Warsaw in" finds Poland, not Europe. Yes/no
+  checks do use transitive relations.
+- **Matching depends on relation names:** a drafted answer counts for a part only if its relation matches
+  the part's (same name, or a shared word). The drafter is told to keep the part's relation names.
+- **Measure it:** `python -m app.bench --ablate full,no_graph_first`.
+
+### Number tracing
+
+The arithmetic check proves `expression = result`. It cannot see that `1921 - 1897 = 24` uses the wrong birth year.
+So every number a reasoning step uses must come from one of these sources (`mathcheck.untraced_number`):
+- the question, or the verified premises handed to it;
+- an answer this conversation already verified;
+- an earlier machine-checked step;
+- a small everyday constant (0-10, 12, 24, 52, 60, 100, 360, 365, 366, 1000, 3600).
+
+Number words ("twelve", "a dozen", "half") count, and a source percentage also counts as 0.15, 1.15 or 0.85.
+A number stated in a step's text with no checked expression must trace too, so arithmetic cannot hide in prose.
+A number from a *similar* problem's verified steps does not count: those steps are only a template.
+An untraced number is a contradiction like any other: the solver goes back to that step.
+This runs in every mode, including aggressive, where the model logic check is off.
+
+Trade-off: an invented number that happens to equal an everyday constant (say 7) still passes.
 
 ### Router learning
 
@@ -119,7 +322,7 @@ Fewer tokens, with no check that catches a hallucination skipped (`engine/compre
 | `python -m app.audit [--fail-on error]` | graph audit: functional violations, incompatible pairs, cycles, near-duplicates, provenance, staleness, relation drift, dangling caches |
 | `python -m app.recheck` | re-validate cached paths and reasoning states; drop expired claims; prune old state |
 | `python -m app.bench --load-synthetic` | load the fictional benchmark knowledge base (`--unload-synthetic` removes it) |
-| `python -m app.bench [--ablate full,no_graph,no_compression,...] [--repeats 3] [--train]` | benchmark (familiar, synthetic, realistic and real-world sets) with Wilson intervals, ablations and router train/test split; writes `results/` |
+| `python -m app.bench [--ablate full,no_graph,no_graph_first,no_compression,...] [--repeats 3] [--train]` | benchmark (familiar, synthetic, realistic and real-world sets) with Wilson intervals, ablations and router train/test split; writes `results/` |
 | `python -m app.bench --report` | methodology, tables and caveats of the latest run |
 | `python -m app.bench_taxonomy [--fallback-only]` | classifier accuracy on the development set and two held-out sets, with a confusion matrix |
 | `python -m app.scale --backend neo4j --sizes 1000,10000,...` | AuraDB scale test (tagged, cleaned up, refuses to touch other data) |

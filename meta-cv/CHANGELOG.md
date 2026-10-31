@@ -3,6 +3,171 @@
 Numbers here are measured. Anything that needs the real model, or a real AuraDB run at size, is marked
 **not measured yet** until someone runs it.
 
+## 2026-11-01
+
+### Plots as ordered events
+- **The gap:** plots did not fit subject-relation-object facts, because a story has an order.
+  "What happens in this book" could not be verified step by step.
+- **Now** (`engine/plots.py`):
+  - **Stored as events:** with `event_in`, `event_order`, `involves` and `follows` (transitive, acyclic).
+  - **Answered graph-first:** every event, in story order, with who takes part.
+  - **Order claims:** checked along the whole chain. A claim that reverses the order is contradicted without
+    a model call, for any acyclic relation.
+  - **Type checks:** events get the type `event`, so an event cannot involve a place.
+  - **Written through the write gate:** by the seed (Pride and Prejudice, 9 events, 43 facts) or `POST /plots`.
+- **Tested** (`tests/test_plots.py`, 4 tests):
+  - stored in order through the gate;
+  - answered from the graph in story order with no draft;
+  - a reversed order is contradicted with no judge or probe call;
+  - the API writes a plot.
+  - All earlier tests pass. The seed now loads 101 facts with none quarantined.
+
+### Review page
+- **New tab `/review`** (`frontend/src/Review.tsx`). It shows three lists:
+  - facts confirmed by Wikidata or the model checks (accept into the graph through the write gate, or reject);
+  - writes the gate quarantined, with the reason (release anyway, or discard);
+  - proposed relation rules (adjust single-valued / transitive, then approve or reject).
+- **Access:** `/status` now reports `writes` (open / token / closed). Token mode asks for the admin token, which is kept only for the browser tab; judge mode shows the lists read-only.
+- **Tested:** `tests/test_review_api.py` (3 tests); every action clicked through in the browser against the demo.
+
+### Independent checks: Wikidata evidence and a separate judge model
+- **The gap:** a claim the graph did not hold was judged only by the model that drafted it, so its mistakes
+  repeated across the draft, the judge and the probe.
+- **Wikidata evidence** (`engine/wikidata.py`), for about 20 mapped relations:
+  - an exact label, alias or year match accepts the claim (source `wikidata`, with the QID);
+  - a mismatch on a single-valued fact corrects it to Wikidata's value, or drops it when there are several;
+  - anything else, including Wikidata being down, leaves the decision to the model checks;
+  - it runs alongside the judge and probe, which are cancelled when it decides;
+  - confirmed facts go to the review queue, never straight into the graph;
+  - `WIKIDATA_LOOKUP=0` turns it off.
+- **Separate judge model:** `META_JUDGE_MODEL` (optional own base URL and key) runs the judge and blind
+  probe. The trace says which model judged and whether it is the drafter.
+- **Measured live:**
+  - the eight true claims about the seed's people and books are confirmed;
+  - "born in Bath", "birth year 1897" and "born in New York" are contradicted with the true value;
+  - "located in York" does not pass for Warsaw;
+  - about 2 s per new subject, 0.4 s cached.
+- **Found and fixed while testing live:**
+  - contradictions never fired, because several items share a name;
+  - substring matching let "Congress Poland" stand in for "Poland";
+  - names were fetched one request per value.
+- **Tested** (`tests/test_evidence.py`, 6 tests, mocked Wikidata):
+  - match, contradiction and silence;
+  - Wikidata being down;
+  - accepting what the model could not confirm;
+  - correcting what the model got wrong;
+  - unmapped relations falling back to the model checks;
+  - judge-model routing.
+- **Not measured yet:** how often Wikidata decides on real questions, and the token savings when it does.
+
+### Faster checking
+- **The gap:** every claim the graph did not hold waited for two model calls, one after the other: the judge
+  and the blind probe. Claims were checked strictly one at a time, even when they did not depend on each other.
+- **Now** (`engine/parallel.py`):
+  - a claim's judge and probe run at the same time;
+  - claims that depend on no other node have their model checks started together as soon as the draft is in;
+  - acceptance, the trace and conflict checks stay strictly in order;
+  - a dependent claim is still checked only after its parent passed;
+  - the per-question meter is shared across threads (with a lock), so call counts and budgets stay exact.
+- **Setting:** `CHECK_WORKERS` (default 6); `1` restores one-by-one checking.
+- **Measured** (scripted model, 0.3 s per call, four independent claims): 2.65 s before, 0.44 s now, same answer.
+- **Tested** (`tests/test_parallel_checks.py`, 3 tests):
+  - faster, with path and trace order unchanged and every call metered;
+  - a dependent node costs no model call when its parent fails;
+  - `CHECK_WORKERS=1` gives the same result one by one.
+  - All earlier tests pass with parallel checking on.
+- **Not measured yet:** the latency gain against the real model API, and whether 6 parallel calls stay
+  within its rate limits.
+
+### Type checks on facts
+- **The gap:** nothing knew what kind of thing an entity is. "Born in 1813" or "written by Warsaw" went to
+  the model judge like any other claim, and could be written into the graph.
+- **Now** (`engine/entity_types.py`):
+  - **Signatures:** relations have type signatures (person, place, work, organization, year, number).
+  - **Types from the graph:** entity types come from explicit `entity_type` facts, or are inferred from the
+    facts an entity already takes part in.
+  - **Rejected without a model call:** a claim that clearly does not fit, in verification and at the write
+    gate (quarantined).
+  - **Graph first:** a claim the graph can correct is still corrected before the type check.
+- **Tested** (`tests/test_entity_types.py`, 4 tests):
+  - type inference, mixed evidence and explicit types;
+  - clear-evidence-only rejection, including "1984" as a title and dates with a year;
+  - a wrong-type claim dropped with no judge or probe call;
+  - the write gate quarantines it.
+  - All earlier tests pass unchanged. The seed and the synthetic benchmark facts produce no flags.
+- **Not measured yet:** how many model calls it saves on real traffic.
+
+### Time-sensitive facts
+- **The gap:**
+  - The router flagged questions about the present (`time_sensitive`), but nothing acted on the flag.
+  - "Who is the CEO of X" could be answered from a fact of any age, at full confidence.
+  - Nothing could record that a fact had stopped being true.
+- **Validity periods:** facts can carry `valid_from` / `valid_to`.
+  - Stored by both graph stores (SQLite migration; Neo4j edge properties).
+  - Set through `/facts` and the write gate, and copied by the snapshot export.
+  - New store method `fact_info()` returns `verified_at`, the period and the source.
+- **Freshness review** (`engine/temporal.py`), for questions about the present:
+  - ended facts are dropped as not current;
+  - graph facts older than `FRESH_DAYS` (30) get an "as of" note;
+  - model-only claims get a "may be out of date" note;
+  - any note caps confidence at medium;
+  - such answers are not cached or reused as similar-question state.
+- **Every question:** a fact's period is shown with it, so an ended fact is never phrased as current.
+- **Faithfulness guard:** dates from notes are allowed in the answer, including in a different format.
+- **Tested** (`tests/test_temporal.py`, 5 tests; plus a store-contract test that dates round-trip):
+  - the former CEO is dropped and the current one kept;
+  - the ended fact is mentioned as ended without tripping the guard;
+  - a stale fact is flagged;
+  - a model-only claim is flagged;
+  - the answer is never served from cache.
+- **Not checked yet:** the Neo4j variant of the contract test (it runs when AuraDB credentials are set and `NEO4J_TESTS` is not 0).
+
+### Graph-first answers in the factual tier
+- **The gap:** the model chose which facts to claim, and the graph only checked them, so an answer could be
+  fully verified but incomplete. "Who are the characters in Pride and Prejudice?" could name two of the four
+  stored characters at "high" confidence.
+- **Now** (`engine/decompose.py`):
+  - **Split:** the question is split into parts (lookups, yes/no checks, and parts that build on an earlier
+    part's answer).
+  - **Graph first:** each part the graph can answer is answered from the graph, with every stored value.
+  - **Draft the rest:** the model drafts only the parts that are left, and those are verified as before.
+  - **Report gaps:** any part still unanswered becomes an "unverified" gap that the answer reports, and it
+    keeps confidence below "high".
+  - **Also used by mixed questions:** their premises go through the same walk.
+- **Benchmark ablation:** `no_graph_first`.
+- **Tested** (`tests/test_graph_first.py`, 7 tests):
+  - a three-part question answered with no draft and no judge or probe call;
+  - all four characters returned;
+  - only the missing part drafted, and a repeated graph answer not re-checked;
+  - an unanswered part reported, and confidence capped at "medium";
+  - a yes/no part the graph contradicts comes back corrected;
+  - the ablation flag turns it off;
+  - defensive plan parsing.
+- **Changed:** `test_stream_endpoint` now expects 5 model calls instead of 4 (the split is the new one).
+  Every other earlier test passes unchanged. The scripted demo answers its multi-fact example from the graph alone.
+- **Not measured yet:**
+  - completeness and token cost on real questions. Run `python -m app.bench --ablate full,no_graph_first` with the model.
+
+### Number tracing in the reasoning and consistency tiers
+- **The gap:** the arithmetic check only proved `expression = result`. A correct calculation on an invented number passed.
+  - Example: `1921 - 1897 = 24` for Einstein's age, when the verified premise says 1879.
+  - In aggressive mode no logic check runs, so nothing else caught it.
+  - Arithmetic written only in a step's text skipped the check entirely.
+- **Now:** every number a step uses must trace to one of:
+  - the question or the verified premises;
+  - an answer this conversation verified;
+  - an earlier machine-checked step;
+  - a small everyday constant.
+
+  An untraced number sends the solver back to that step, with the reason. The consistency tier's calculations must trace to the question and the statements they cite.
+- **Tested** (`tests/test_number_tracing.py`, 8 tests):
+  - the Einstein case is caught in aggressive mode and corrected by the backtrack;
+  - arithmetic hidden in text is caught;
+  - number words, percentages, rounded earlier results and an earlier turn's verified answer all trace;
+  - a consistency calculation with an invented year is rejected.
+  - All earlier tests pass unchanged.
+- **Not measured yet:** how often it fires on real model output, and its false-positive rate there. Run the benchmark with the model.
+
 ## 2026-10-31 (later)
 
 ### Keyword fallback: general cue groups, measured on held-out data

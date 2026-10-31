@@ -1,18 +1,35 @@
 """Factual tier: answer as a path of atomic claims and walk it node by node.
 
+Graph first (decompose.py): the question is split into the parts it asks for, and every part the graph
+can answer is answered from the graph alone - every stored value, nothing left to the model. Only the
+remaining parts are drafted, and a part that still has no verified answer is reported as a gap.
+
 A node is accepted only after it is checked, and the walk moves on only from
 accepted nodes:
   1. graph     - the knowledge graph supports it (directly or by transitivity),
                  or contradicts it and holds the single correct value (corrected)
+     types     - not in the graph, and its subject or object is the wrong kind of thing for the
+                 relation (entity_types.py): dropped at once, with no model call
   2. cache     - it was model-verified recently (claims expire after CLAIM_TTL_HOURS)
-  3. model     - not in the graph: an independent true/false judgment AND a blind
-                 probe (asked without seeing the claimed object) must agree.
+  3. evidence  - not in the graph: Wikidata (wikidata.py) is asked for relations it records.
+                 A match accepts the claim; a clear contradiction of a single-valued fact
+                 corrects it (or drops it when Wikidata holds several values).
+  4. model     - otherwise an independent true/false judgment AND a blind probe (asked
+                 without seeing the claimed object) must agree. They run on META_JUDGE_MODEL
+                 when it is set, so the drafter is not checking its own claims.
                  Skipped in verified-only mode: then only the graph counts.
 An accepted node must also not clash with an earlier node of the answer or with what
 the conversation already established: same subject and a single-valued relation with a
 different object, or objects the graph marks incompatible_with / contradicts each other.
 Anything else is rejected or left unverified and kept out of the answer.
-Nodes that depend on a rejected node are skipped. The composed prose then passes the
+Nodes that depend on a rejected node are skipped.
+
+Speed (parallel.py): a claim's independent check and blind probe run at the same time, and claims that
+depend on no other node have their model checks started together as soon as the draft is in. Nodes are
+still accepted, shown and conflict-checked strictly in order, and a node that depends on another is never
+checked before that node has passed. Accepted facts then pass the freshness review
+(temporal.py): a validity period travels with its fact, and for a question about the present an ended fact
+is dropped and an old or model-only one is kept with a date note. The composed prose then passes the
 faithfulness guard (guardrails.py) before it is returned.
 """
 import difflib
@@ -22,7 +39,8 @@ import time
 from .. import config, llm, state_cache
 from ..db import connect
 from ..graph_common import EXCLUSIVE_RELATIONS
-from . import compression, guardrails
+from . import compression, decompose, entity_types, guardrails, parallel, temporal, wikidata
+from .entities import normalize
 from .router import caught
 from .trace import Trace
 
@@ -49,6 +67,10 @@ COMPOSE_SYSTEM = """Write the answer to the question using ONLY the verified fac
 Do not add any other fact, name, date, number or detail, even if you believe it is true.
 If the verified facts do not fully answer the question, say briefly what could not be verified.
 If corrections to earlier answers are listed, point them out.
+A fact may carry a time note in brackets: keep it with the fact ("as of ...", "since ...", "until ..."), and
+never present a fact as current beyond what its note says. Facts noted "event N of M" are a story's events:
+tell them in that order. Facts listed as no longer current must not be
+presented as current; you may say they ended.
 Plain prose, concise."""
 
 COMPOSE_STRICT = COMPOSE_SYSTEM + """
@@ -89,8 +111,11 @@ def claim_key(c: dict) -> str:
     return state_cache.make_key(f"claim:{triple(c)}")
 
 
-def _queue_for_review(c: dict) -> None:
-    """Model-verified facts are never written to the graph directly; a human accepts them via /review."""
+EVIDENCE_SOURCES = ("graph", "graph-corrected", "wikidata", "wikidata-corrected")
+
+
+def _queue_for_review(c: dict, reason: str = "model-verified, not in graph") -> None:
+    """Facts verified outside the graph are never written to it directly; a human accepts them via /review."""
     with connect() as conn:
         exists = conn.execute(
             "SELECT 1 FROM review_queue WHERE subject=? AND relation=? AND object=? AND status='pending'",
@@ -99,7 +124,7 @@ def _queue_for_review(c: dict) -> None:
         if not exists:
             conn.execute(
                 "INSERT INTO review_queue(subject, relation, object, source, reason, created_at) VALUES (?,?,?,?,?,?)",
-                (c["subject"], c["relation"], c["object"], "chat", "model-verified, not in graph", time.time()),
+                (c["subject"], c["relation"], c["object"], "chat", reason, time.time()),
             )
 
 
@@ -133,7 +158,8 @@ def still_holds(store, claims: list[dict]) -> str | None:
         if c.get("source") in ("graph", "graph-corrected"):
             if store.validate(c["subject"], c["relation"], c["object"])["verdict"] != "supported":
                 return f"graph no longer supports {c['subject']} {c['relation']} {c['object']}"
-        elif c.get("source") in ("model", "cache") and state_cache.get(claim_key(c)) is None:
+        elif c.get("source") in ("model", "cache", "wikidata", "wikidata-corrected") \
+                and state_cache.get(claim_key(c)) is None:
             return f"verification of {c['subject']} {c['relation']} {c['object']} expired"
     return None
 
@@ -158,10 +184,11 @@ def _clash(store, c: dict, other: dict) -> str | None:
 
 
 def _check_conflicts(store, node: dict, checked: list[dict], earlier: list[dict], trace: Trace, label: str,
-                     found: list[dict]):
-    """Generator: an accepted node that clashes with an earlier node or an earlier turn is dropped,
-    unless the graph backs it and the other side does not."""
+                     found: list[dict], answered: list[dict] = ()):
+    """Generator: an accepted node that clashes with an earlier node, an earlier turn or a part answered
+    from the graph is dropped, unless the graph backs it and the other side does not."""
     pool = [(e, "faithful.context", "established earlier in this conversation") for e in earlier]
+    pool += [(a, "factual.relation_error", f"answered from the graph (part {a['part'] + 1})") for a in answered]
     pool += [(x, "factual.relation_error", f"node {i + 1} of this answer") for i, x in enumerate(checked)
              if x["status"] == "accepted"]
     for other, risk, where in pool:
@@ -186,21 +213,59 @@ def _stored_values(store, subject: str, relation: str) -> list[str]:
     return sorted({f["object"] for f in store.facts_about(subject) if f["subject"] == s and f["relation"] == relation})
 
 
-def _model_check(c: dict) -> dict:
-    judge = llm.chat_json(JUDGE_SYSTEM, f"Claim: {c['subject']} {c['relation'].replace('_', ' ')} {c['object']}")
+def start_model_check(c: dict) -> tuple:
+    """Start the Wikidata lookup, the independent judgment and the blind probe at the same time (none sees
+    another's answer). Returns (judge, probe, evidence or None) futures."""
+    evidence = parallel.submit(wikidata.check, c["subject"], c["relation"], c["object"]) \
+        if wikidata.enabled() and wikidata.covers(c["relation"]) else None
+    return (parallel.submit(llm.judge_json, JUDGE_SYSTEM, f"Claim: {c['subject']} {c['relation'].replace('_', ' ')} {c['object']}"),
+            parallel.submit(llm.judge_json, PROBE_SYSTEM, f"subject: {c['subject']}\nrelation: {c['relation']}\nobject: ?"),
+            evidence)
+
+
+def _reversed(store, c: dict) -> str | None:
+    """For an acyclic relation (story order, located_in): the graph already leads from the object back to the
+    subject, so the claim reverses it. Returns that chain, or None."""
+    try:
+        if not store.relation_flags(c["relation"]).get("acyclic"):
+            return None
+        path = store.path_exists(c["object"], c["relation"], c["subject"])
+    except ValueError:
+        return None
+    return f" -[{c['relation']}]-> ".join(path) if path else None
+
+
+def _needs_model_check(store, c: dict) -> bool:
+    """Would verify_node reach the model check? (Graph and cache say nothing, and the types fit.)"""
+    try:
+        if store.validate(c["subject"], c["relation"], c["object"])["verdict"] != "unknown":
+            return False
+    except ValueError:
+        pass
+    if _reversed(store, c) or entity_types.check(store, c["subject"], c["relation"], c["object"]):
+        return False
+    cached = state_cache.get(claim_key(c))
+    return not (cached and cached.get("status") == "accepted")
+
+
+def _model_check(c: dict, started: tuple | None = None) -> dict:
+    judge_f, probe_f, _ = started or start_model_check(c)
+    judge = judge_f.result()
     verdict = str(judge.get("verdict", "unsure")).lower() if isinstance(judge, dict) else "unsure"
     try:
         conf = float(judge.get("confidence", 0)) if isinstance(judge, dict) else 0.0
     except (TypeError, ValueError):
         conf = 0.0
-    probe = llm.chat_json(PROBE_SYSTEM, f"subject: {c['subject']}\nrelation: {c['relation']}\nobject: ?")
+    probe = probe_f.result()
     answers = [str(a) for a in (probe.get("answers") or [])] if isinstance(probe, dict) else []
     matched = any(same_entity(a, c["object"]) for a in answers)
     return {"verdict": verdict, "confidence": conf, "probe_answers": answers[:5], "probe_matched": matched}
 
 
-def verify_node(store, c: dict, trace: Trace, label: str, verified_only: bool = False):
-    """Generator: yields trace events, returns the claim with status/source/reason set."""
+def verify_node(store, c: dict, trace: Trace, label: str, verified_only: bool = False, started: tuple | None = None):
+    """Generator: yields trace events, returns the claim with status/source/reason set.
+
+    started: this claim's model check, already running (pre-started for claims that depend on no other node)."""
     ev = trace.start("factual", f"{label}: {_fmt(c)}", "checking against the knowledge graph")
     yield ev
 
@@ -224,6 +289,16 @@ def verify_node(store, c: dict, trace: Trace, label: str, verified_only: bool = 
         yield trace.settle(ev, "fail", f"Graph contradicts it: {v['reason']}. Dropped.")
         return {**c, "status": "rejected", "source": "graph", "reason": v["reason"]}
 
+    backwards = _reversed(store, c)
+    if backwards:
+        yield trace.settle(ev, "fail", f"Graph has it the other way round: {backwards}. Dropped.")
+        return {**c, "status": "rejected", "source": "graph", "reason": f"the graph has it the other way round: {backwards}"}
+
+    wrong_type = entity_types.check(store, c["subject"], c["relation"], c["object"])
+    if wrong_type:
+        yield trace.settle(ev, "fail", f"Type check: {wrong_type}. Dropped without a model call.")
+        return {**c, "status": "rejected", "source": "types", "reason": wrong_type}
+
     if verified_only:
         yield trace.settle(ev, "warn", "Not in the graph, and verified-only mode accepts graph facts only. Kept out.")
         return {**c, "status": "unverified", "source": "graph", "reason": "verified-only mode"}
@@ -233,18 +308,45 @@ def verify_node(store, c: dict, trace: Trace, label: str, verified_only: bool = 
         yield trace.settle(ev, "ok", "Not in the graph, but this exact node was verified recently (cache). Moving on.")
         return {**c, "status": "accepted", "source": "cache", "reason": "previously model-verified"}
 
-    yield trace.settle(ev, "running", "Not in the graph. Running an independent check and a blind probe...")
-    m = _model_check(c)
+    run = started or start_model_check(c)
+    yield trace.settle(ev, "running", "Not in the graph. " + ("Wikidata lookup, independent" if run[2] else "Independent")
+                       + " check and blind probe " + ("(already running alongside the other nodes)..." if started
+                                                       else "(run together)..."))
+    evidence = run[2].result() if run[2] else None
+    if evidence and evidence["verdict"] == "supported":
+        for f in run[:2]:
+            f.cancel()
+        state_cache.put(claim_key(c), {"status": "accepted", "checked_at": time.time()},
+                        ttl=config.CLAIM_TTL_HOURS * 3600, triples=[triple(c)])
+        _queue_for_review(c, f"confirmed by Wikidata {evidence['qid']}, not in graph")
+        yield trace.settle(ev, "ok", f"Not in the graph; outside evidence confirms it: {evidence['reason']}. "
+                                     "Accepted and queued for graph review.")
+        return {**c, "status": "accepted", "source": "wikidata", "reason": evidence["reason"], "qid": evidence["qid"]}
+    if evidence and evidence["verdict"] == "contradicted":
+        for f in run[:2]:
+            f.cancel()
+        if len(evidence["values"]) == 1:
+            fixed = {**c, "object": normalize(evidence["values"][0])}
+            yield trace.settle(ev, "warn", f"Outside evidence contradicts it: {evidence['reason']}. Corrected to {_fmt(fixed)}.")
+            return {**fixed, "status": "accepted", "source": "wikidata-corrected", "reason": evidence["reason"],
+                    "original_object": c["object"], "qid": evidence["qid"]}
+        yield trace.settle(ev, "fail", f"Outside evidence contradicts it: {evidence['reason']}. Dropped.")
+        return {**c, "status": "rejected", "source": "wikidata", "reason": evidence["reason"], "qid": evidence["qid"]}
+
+    m = _model_check(c, run)
+    judge = f"judge {llm.judge_model()}, " + ("a different model from the drafter" if llm.judge_configured()
+                                               else "the same model that drafted it")
     probe = ", ".join(m["probe_answers"]) or "no answer"
     if m["verdict"] == "false" and m["confidence"] >= 0.5:
-        yield trace.settle(ev, "fail", f"Independent check says false ({m['confidence']:.2f}). Dropped.")
+        yield trace.settle(ev, "fail", f"Independent check ({judge}) says false ({m['confidence']:.2f}). Dropped.")
         return {**c, "status": "rejected", "source": "model", "reason": "independent check: false"}
     if m["verdict"] == "true" and m["confidence"] >= 0.7 and m["probe_matched"]:
-        accepted = {**c, "status": "accepted", "source": "model", "reason": "independent check and blind probe agree"}
+        accepted = {**c, "status": "accepted", "source": "model",
+                    "reason": f"independent check and blind probe agree ({judge})"}
         state_cache.put(claim_key(c), {"status": "accepted", "checked_at": time.time()},
                         ttl=config.CLAIM_TTL_HOURS * 3600, triples=[triple(c)])
         _queue_for_review(c)
-        yield trace.settle(ev, "ok", f"Not in graph; check says true ({m['confidence']:.2f}) and blind probe "
+        yield trace.settle(ev, "ok", f"Not in graph; check ({judge}) says true ({m['confidence']:.2f}) and blind probe "
                                      f"independently gave '{probe}'. Accepted and queued for graph review.")
         return accepted
     yield trace.settle(ev, "warn", f"Could not confirm (check: {m['verdict']} {m['confidence']:.2f}; blind probe: "
@@ -255,16 +357,18 @@ def verify_node(store, c: dict, trace: Trace, label: str, verified_only: bool = 
 def _caught_by_checks(checked: list[dict]) -> list[dict]:
     out = []
     for c in checked:
-        if c["source"] == "graph-corrected":
+        if c["source"] in ("graph-corrected", "wikidata-corrected"):
             out.append(caught("factual.entity_error", "factual", "corrected",
                               f"{c['subject']} {c['relation']} {c['original_object']} -> {c['object']} ({c['reason']})"))
-        elif c["status"] == "rejected" and c["source"] in ("graph", "model"):
+        elif c["status"] == "rejected" and c["source"] in ("graph", "model", "wikidata"):
             out.append(caught("factual.entity_error", "factual", "dropped", f"{_fmt(c)}: {c['reason']}"))
+        elif c["status"] == "rejected" and c["source"] == "types":
+            out.append(caught("factual.relation_error", "factual", "dropped", f"{_fmt(c)}: {c['reason']}"))
     return out
 
 
 def walk(store, question: str, entities: list[str], trace: Trace, prior: dict | None = None,
-         earlier: list[dict] | None = None, verified_only: bool = False):
+         earlier: list[dict] | None = None, verified_only: bool = False, time_sensitive: bool = False):
     """Generator: draft the claim path and verify it node by node. Returns (checked, found)."""
     earlier = earlier or []
     ev = trace.start("graph", "Looking up known facts in the knowledge graph",
@@ -293,6 +397,18 @@ def walk(store, question: str, entities: list[str], trace: Trace, prior: dict | 
                          + (" and " if prior and earlier else "") + ("earlier in this conversation" if earlier else "")
                          + " - already-verified nodes skip their checks.", "ok")
 
+    parts, answered, open_parts = [], [], []
+    if decompose.enabled():
+        parts = yield from decompose.plan(store, question, entities, trace)
+        if parts:
+            answered, open_parts = yield from decompose.fill(store, parts, trace)
+    if parts and not open_parts:
+        yield trace.note("graph", "Every part answered from the graph",
+                         f"{len(answered)} stored fact(s) answer all {len(parts)} part(s) - nothing was left to the model, "
+                         "so there is no draft to check.", "ok")
+        return (yield from _finish(store, parts, answered, [], [], time_sensitive, trace))
+    focus = decompose.focus_text(parts, open_parts, answered) if parts else None
+
     all_relations = store.relation_names()
     trim = compression.enabled()
     if trim:
@@ -303,48 +419,104 @@ def walk(store, question: str, entities: list[str], trace: Trace, prior: dict | 
     else:
         shown, cut, relations, cut_relations = known[:80], [], all_relations, []
 
-    checked, found = yield from _draft_and_check(store, question, shown, relations, earlier, trace, verified_only)
+    checked, found = yield from _draft_and_check(store, question, shown, relations, earlier, trace, verified_only,
+                                                 answered, focus)
     lost = compression.context_lost(checked, cut, cut_relations) if trim else None
     if lost:
         yield trace.note("compression", "Context check: trimming may have hidden something",
                          f"{lost}. Redrafting with every known fact and relation.", "warn")
         compression.record(redrafted=True, redraft_reason=lost)
         checked, found = yield from _draft_and_check(store, question, known[:80], all_relations, earlier, trace,
-                                                     verified_only)
+                                                     verified_only, answered, focus)
     elif trim and (cut or cut_relations):
         yield trace.note("compression", "Context check passed",
                          f"{len(shown)} of {len(known)} known facts and {len(relations)} of {len(all_relations)} relation "
                          "names were shown; every claim that relies on the cut ones was verified against the full graph.",
                          "ok")
-    return checked, found
+
+    return (yield from _finish(store, parts, answered, checked, found, time_sensitive, trace))
+
+
+def _finish(store, parts: list[dict], answered: list[dict], drafted: list[dict], found: list[dict],
+            time_sensitive: bool, trace: Trace):
+    """Generator: merge graph answers with the verified draft, review them for currency, then report every part
+    left without a verified answer. Returns (checked, found)."""
+    merged, seen = list(answered), {triple(a) for a in answered}
+    for c in drafted:  # a drafted claim the graph corrected can land on a graph answer: keep each fact once
+        if c.get("dup") or (c["status"] == "accepted" and triple(c) in seen):
+            continue
+        if c["status"] == "accepted":
+            seen.add(triple(c))
+        merged.append(c)
+    checked, stale = yield from temporal.review(store, merged, time_sensitive, trace)
+    found = found + stale
+    if parts:
+        missing_parts = decompose.gaps(parts, checked)
+        if missing_parts:
+            yield trace.note("graph", "Coverage check: some parts have no verified answer",
+                             f"{len(parts) - len(missing_parts)} of {len(parts)} part(s) answered; not answered: "
+                             + "; ".join(g["part_text"] for g in missing_parts) + ". The answer will say so.", "warn")
+        else:
+            yield trace.note("graph", "Coverage check passed",
+                             f"Every one of the {len(parts)} part(s) has a verified answer.", "ok")
+        checked += missing_parts
+    return checked, _caught_by_checks(answered) + found
 
 
 def _draft_and_check(store, question: str, shown: list[dict], relations: list[str], earlier: list[dict],
-                     trace: Trace, verified_only: bool):
-    """Generator: draft the claim path from the shown context and verify it node by node against the full graph."""
-    ev = trace.start("factual", "Drafting the answer as a path of claims")
+                     trace: Trace, verified_only: bool, answered: list[dict] = (), focus: str | None = None):
+    """Generator: draft the claim path from the shown context and verify it node by node against the full graph.
+
+    answered / focus: parts the graph already answered, and the parts still needed (graph-first)."""
+    ev = trace.start("factual", "Drafting the parts the graph could not answer" if focus
+                     else "Drafting the answer as a path of claims")
     yield ev
     known_txt = "\n".join(f"- {f['subject']} | {f['relation']} | {f['object']}" for f in shown) or "(none)"
     claims = _parse_claims(llm.chat_json(
         DRAFT_SYSTEM, f"KNOWN FACTS:\n{known_txt}\n\nRelations in use: {relations}\n\nQuestion: {question}"
+        + (f"\n\n{focus}" if focus else "")
     ))
     yield trace.settle(ev, "ok" if claims else "fail", f"{len(claims)} node(s) to verify, in order")
 
+    by_triple = {triple(a): a for a in answered}
+    # Claims that depend on no other node need their model check whatever the others turn out to be,
+    # so those checks start together now; each is still awaited, and accepted, in order below.
+    started = {i: start_model_check(c) for i, c in enumerate(claims)
+               if parallel.enabled() and not verified_only and not c["depends_on"] and triple(c) not in by_triple
+               and _needs_model_check(store, c)}
+    if len(started) > 1:
+        yield trace.note("factual", "Checking independent nodes in parallel",
+                         f"{len(started)} node(s) need a model check and depend on no other node, so their checks "
+                         "run at the same time. They are still accepted one by one, in order.", "info")
+    try:
+        checked, found = yield from _walk_claims(store, claims, by_triple, earlier, trace, verified_only, answered, started)
+    finally:
+        for f in (f for run in started.values() for f in run if f is not None):
+            f.cancel()  # only matters if the walk stopped early (budget, error): don't leave work queued
+    return checked, _caught_by_checks(checked) + found
+
+
+def _walk_claims(store, claims: list[dict], by_triple: dict, earlier: list[dict], trace: Trace, verified_only: bool,
+                 answered: list[dict], started: dict):
+    """Generator: verify the drafted claims strictly in order. Returns (checked, conflict findings)."""
     checked: list[dict] = []
     found: list[dict] = []
     for i, c in enumerate(claims):
         label = f"Node {i + 1}/{len(claims)}"
+        if triple(c) in by_triple:  # the draft repeated a graph answer: already verified, kept once
+            checked.append({**by_triple[triple(c)], "depends_on": c["depends_on"], "dup": True})
+            continue
         broken = [d for d in c["depends_on"] if checked[d]["status"] != "accepted"]
         if broken:
             yield trace.note("factual", f"{label}: {_fmt(c)}",
                              f"Skipped: depends on node {broken[0] + 1}, which did not pass.", "fail")
             checked.append({**c, "status": "skipped", "source": None, "reason": f"depends on node {broken[0] + 1}"})
             continue
-        node = yield from verify_node(store, c, trace, label, verified_only)
+        node = yield from verify_node(store, c, trace, label, verified_only, started.get(i))
         if node["status"] == "accepted":
-            node = yield from _check_conflicts(store, node, checked, earlier, trace, label, found)
+            node = yield from _check_conflicts(store, node, checked, earlier, trace, label, found, answered)
         checked.append(node)
-    return checked, _caught_by_checks(checked) + found
+    return checked, found
 
 
 STATE_ANSWER_SYSTEM = """Answer the question using ONLY the numbered verified facts.
@@ -387,44 +559,54 @@ def answer_from_state(store, question: str, prior: dict, trace: Trace):
         return None
     yield trace.settle(ev, "ok", f"Answered from {len(used)} fact(s) verified for the similar question and re-checked "
                                  "against the graph - no new claim chain needed.")
-    graph_share = sum(c.get("source") in ("graph", "graph-corrected") for c in accepted) / len(accepted)
+    graph_share = sum(c.get("source") in EVIDENCE_SOURCES for c in accepted) / len(accepted)
     return {"tier": "factual", "answer": text, "confidence": "high" if graph_share >= 0.5 else "medium",
             "path": accepted, "caught": [], "withheld": 0, "cacheable": False, "stopped": None,
             "compressed": "state_answer"}
 
 
 def answer(store, question: str, entities: list[str], trace: Trace, prior: dict | None = None,
-           earlier: list[dict] | None = None, verified_only: bool = False):
+           earlier: list[dict] | None = None, verified_only: bool = False, time_sensitive: bool = False):
     """Generator: yields trace events, returns the tier result.
 
     prior: a similar question's verified state (states.find); earlier: claims this conversation established.
+    time_sensitive: the question asks about the present, so facts must still be current (temporal.py).
     """
-    if compression.similar_enough(prior) and not verified_only:
+    if compression.similar_enough(prior) and not verified_only and not time_sensitive:
         reused = yield from answer_from_state(store, question, prior, trace)
         if reused:
             return reused
-    checked, found = yield from walk(store, question, entities, trace, prior, earlier, verified_only)
+    checked, found = yield from walk(store, question, entities, trace, prior, earlier, verified_only, time_sensitive)
     accepted = [c for c in checked if c["status"] == "accepted"]
-    missing = [c for c in checked if c["status"] != "accepted"]
+    ended = [c for c in checked if c.get("ended")]
+    missing = [c for c in checked if c["status"] != "accepted" and not c.get("ended")]
 
     ev = trace.start("compose", "Writing the answer from verified nodes only",
                      f"{len(accepted)} verified, {len(missing)} left out")
     yield ev
     if accepted:
-        facts = "\n".join(f"- {c['subject']} {c['relation'].replace('_', ' ')} {c['object']}" for c in accepted)
-        gaps = "\n".join(f"- {c['subject']} {c['relation'].replace('_', ' ')} ?" for c in missing) or "(none)"
+        facts = "\n".join(f"- {c['subject']} {c['relation'].replace('_', ' ')} {c['object']}"
+                          + "".join(f" ({c[k]})" for k in ("detail", "time_note") if c.get(k)) for c in accepted)
+        gaps = "\n".join(f"- {c.get('part_text') or c['subject'] + ' ' + c['relation'].replace('_', ' ') + ' ?'}"
+                         for c in missing) or "(none)"
         fixes = "\n".join(f"- earlier: {_fmt(c['corrects'])}; now verified: {_fmt(c)}" for c in accepted if c.get("corrects"))
+        past = "\n".join(f"- {c['subject']} {c['relation'].replace('_', ' ')} {c['object']} ({c['time_note']})"
+                         for c in ended)
         prompt = (f"Question: {question}\n\nVerified facts:\n{facts}\n\nCould not verify:\n{gaps}"
+                  + (f"\n\nNo longer current:\n{past}" if past else "")
                   + (f"\n\nCorrections to earlier answers:\n{fixes}" if fixes else ""))
         text = llm.chat_text(COMPOSE_SYSTEM, prompt)
         yield trace.settle(ev, "ok")
-        text = yield from guardrails.guard_factual(question, text, accepted, missing, prompt, COMPOSE_STRICT, trace, found)
+        text = yield from guardrails.guard_factual(question, text, accepted, missing + ended, prompt, COMPOSE_STRICT,
+                                                   trace, found)
     else:
         text = "I couldn't verify any facts to answer this, so I'd rather not guess."
         yield trace.settle(ev, "warn", "Nothing verified - declining to answer")
 
-    graph_share = sum(c["source"] in ("graph", "graph-corrected") for c in accepted) / max(len(accepted), 1)
+    graph_share = sum(c["source"] in EVIDENCE_SOURCES for c in accepted) / max(len(accepted), 1)
     confidence = "high" if accepted and not missing and graph_share >= 0.5 else "medium" if accepted else "low"
+    if confidence == "high" and any(c.get("stale") for c in accepted):
+        confidence = "medium"  # true as of an older check, or only as far as the model knows
     return {
         "tier": "factual",
         "answer": text.strip(),
@@ -432,6 +614,6 @@ def answer(store, question: str, entities: list[str], trace: Trace, prior: dict 
         "path": checked,
         "caught": found,
         "withheld": sum(c["status"] == "unverified" for c in checked),
-        "cacheable": bool(accepted) and not missing,
+        "cacheable": bool(accepted) and not missing and not time_sensitive,
         "stopped": None if accepted else {"reason": "nothing_verified", "detail": "no claim passed verification"},
     }

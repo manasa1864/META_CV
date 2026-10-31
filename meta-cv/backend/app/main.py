@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from . import audit, config, graph_guard, ingest as ingest_mod, llm, metrics, state_cache
 from .db import connect, init_db
-from .engine import pipeline
+from .engine import pipeline, plots
 from .engine.health import health
 from .examples import EXAMPLES
 from .graph_common import GraphLimitError, GraphUnavailable, ReadOnlyGraph
@@ -153,7 +153,9 @@ def status():
     llm_status = {"configured": True, "breaker_open": False} if config.SCRIPTED_DEMO else llm.status()
     return {"llm": llm_status, "scripted": config.SCRIPTED_DEMO, "degraded": getattr(store, "degraded", None),
             "health": health.state(), "judge_mode": config.JUDGE_MODE, "router_frozen": config.ROUTER_FROZEN,
-            "backend": store.backend}
+            "backend": store.backend,
+            # how admin writes (review, quarantine, rules) work here - mirrors require_admin
+            "writes": "token" if config.ADMIN_TOKEN else "closed" if config.JUDGE_MODE else "open"}
 
 
 # ------------------------------------------------------------------------------------- graph
@@ -162,6 +164,20 @@ class Fact(BaseModel):
     relation: str = Field(min_length=1, max_length=64)
     object: str = Field(min_length=1, max_length=300)
     source: str | None = Field(default=None, max_length=300)  # where the fact came from (document, URL, ...)
+    # For facts that change over time: when it became / stopped being true (YYYY, YYYY-MM or YYYY-MM-DD).
+    valid_from: str | None = Field(default=None, pattern=r"^\d{4}(-\d{2}){0,2}$")
+    valid_to: str | None = Field(default=None, pattern=r"^\d{4}(-\d{2}){0,2}$")
+
+
+class PlotEvent(BaseModel):
+    event: str = Field(min_length=1, max_length=200)    # a short description, unique within the work
+    involves: list[str] = Field(default_factory=list, max_length=20)
+
+
+class Plot(BaseModel):
+    work: str = Field(min_length=1, max_length=300)
+    events: list[PlotEvent] = Field(min_length=1, max_length=200)   # in story order
+    source: str | None = Field(default=None, max_length=300)
 
 
 class RelationDef(BaseModel):
@@ -191,7 +207,14 @@ def define_relation(r: RelationDef):
 @app.post("/facts", dependencies=[Depends(require_admin)])
 def add_fact(f: Fact):
     """Through the write gate: accepted, or quarantined with the reason."""
-    return graph_guard.add_fact_checked(store, f.subject, f.relation, f.object, f.source, added_by="api")
+    return graph_guard.add_fact_checked(store, f.subject, f.relation, f.object, f.source, added_by="api",
+                                        valid_from=f.valid_from, valid_to=f.valid_to)
+
+
+@app.post("/plots", dependencies=[Depends(require_admin)])
+def add_plot(p: Plot):
+    """A work's events in story order, written through the write gate (engine/plots.py)."""
+    return plots.add_plot(store, p.work, [e.model_dump() for e in p.events], p.source, added_by="api")
 
 
 @app.post("/aliases", dependencies=[Depends(require_admin)])
@@ -390,10 +413,8 @@ def get_metrics():
 
 @app.get("/results/latest")
 def results_latest():
-    data = metrics.latest_results()
-    if data is None:
-        raise HTTPException(404, "no results yet - run python -m app.bench")
-    return data
+    """null until `python -m app.bench` has written results; that is a normal state, not an error."""
+    return metrics.latest_results()
 
 
 @app.get("/examples")

@@ -157,7 +157,7 @@ def test_stream_endpoint(fake_llm, monkeypatch):
         assert r.headers["content-type"].startswith("text/event-stream")
         events = [json.loads(line[6:]) for line in r.text.splitlines() if line.startswith("data: ")]
         assert events[-1]["type"] == "final"
-        assert events[-1]["tokens"]["calls"] == 4  # router, draft, compose, guard - metered across stream threads
+        assert events[-1]["tokens"]["calls"] == 5  # router, plan, draft, compose, guard - metered across stream threads
         assert any(e["type"] == "thinking_done" and e["message"] == "Processing complete" for e in events)
         assert client.post("/chat", json={"question": "Where was Jane Austen born?"}).json()["answer"] == "Steventon."
 

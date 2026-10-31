@@ -6,7 +6,8 @@ factual      every number, year and proper noun in the composed text must appear
              return a deterministic rendering of the accepted triples and record factual.fabrication.
 reasoning    the final numeric answer must equal the result of the last machine-checked step.
 consistency  names and numbers must come from the earlier verified statements it cites (or from
-             machine-checked calculations).
+             machine-checked calculations), and every number a calculation uses must trace to
+             the question or those statements.
 """
 import re
 
@@ -63,7 +64,13 @@ def _claim_matches(c: dict, t: dict) -> bool:
 
 
 def factual_problems(question: str, text: str, accepted: list[dict], missing: list[dict]) -> list[str]:
-    allowed = _blob(question, *(f"{c['subject']} {c['relation'].replace('_', ' ')} {c['object']}" for c in accepted),
+    # Facts that ended are verified history: the answer may mention them (as ended), with their dates.
+    accepted = list(accepted) + [c for c in missing if c.get("ended")]
+    missing = [c for c in missing if not c.get("ended")]
+    # a date note like "2021-06" may come back as "2021-06", or as "June 2021" (year and month separately)
+    allowed = _blob(question, *(f"{c['subject']} {c['relation'].replace('_', ' ')} {c['object']} {c.get('detail', '')} "
+                                f"{c.get('time_note', '')} "
+                                f"{c.get('time_note', '').replace('-', ' ')}" for c in accepted),
                     *(f"{c['subject']} {c['relation'].replace('_', ' ')}" for c in missing),
                     *(f"{c['corrects']['subject']} {c['corrects']['object']}" for c in accepted if c.get("corrects")))
     problems = [f"'{t}' is not in the verified facts" for t in unsupported_terms(text, allowed)]
@@ -79,7 +86,13 @@ def factual_problems(question: str, text: str, accepted: list[dict], missing: li
 
 
 def render_verified(accepted: list[dict], missing: list[dict]) -> str:
-    lines = ["Verified: " + "; ".join(f"{c['subject']} {c['relation'].replace('_', ' ')} {c['object']}" for c in accepted) + "."]
+    lines = ["Verified: " + "; ".join(f"{c['subject']} {c['relation'].replace('_', ' ')} {c['object']}"
+                                      + (f" ({c['time_note']})" if c.get("time_note") else "") for c in accepted) + "."]
+    ended = [c for c in missing if c.get("ended")]
+    missing = [c for c in missing if not c.get("ended")]
+    if ended:
+        lines.append("No longer current: " + "; ".join(f"{c['subject']} {c['relation'].replace('_', ' ')} {c['object']} "
+                                                       f"({c['time_note']})" for c in ended) + ".")
     if missing:
         lines.append("Could not verify: " + "; ".join(f"{c['subject']} {c['relation'].replace('_', ' ')}" for c in missing) + ".")
     return "\n".join(lines)
@@ -130,6 +143,7 @@ def consistency_problems(question: str, text: str, used: list[dict], calculation
     for c in used:
         parts.append(f"{c['subject']} {c['relation'].replace('_', ' ')} {c['object']}" if c.get("kind", "claim") == "claim"
                      else f"{c['question']} {c['final_answer']}")
+    sources = "\n".join(parts)
     for k in calculations:
         parts.append(f"{k.get('expression', '')} {k.get('result', '')}")
     problems = [f"'{t}' is not in the cited statements" for t in unsupported_terms(text, _blob(*parts))]
@@ -137,4 +151,7 @@ def consistency_problems(question: str, text: str, used: list[dict], calculation
         err = mathcheck.check_step(k)
         if err:
             problems.append(f"calculation wrong: {err}")
+    untraced = mathcheck.untraced_number([{"text": "", **k} for k in calculations], sources)
+    if untraced:
+        problems.append(f"calculation {untraced[0] + 1} uses a number with no source: {untraced[1]}")
     return problems

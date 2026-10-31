@@ -42,7 +42,7 @@ export default function ResultsView() {
     getResults()
       .then((d) => {
         setR(d)
-        setState('ok')
+        setState(d ? 'ok' : 'missing')
       })
       .catch(() => setState('missing'))
   }, [])
