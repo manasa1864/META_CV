@@ -12,6 +12,7 @@ RELATIONS = [  # name, functional, transitive
     ("published_in", True, False),
     ("located_in", False, True),
     ("nobel_prize_year", True, False),
+    ("birth_year", True, False),
 ]
 
 FACTS = """
@@ -55,10 +56,24 @@ albert einstein | nobel_prize_year | 1921
 albert einstein | developed | theory of relativity
 isaac newton | formulated | laws of motion
 isaac newton | formulated | law of universal gravitation
+jane austen | birth_year | 1775
+george orwell | birth_year | 1903
+harper lee | birth_year | 1926
+j. k. rowling | birth_year | 1965
+marie curie | birth_year | 1867
+albert einstein | birth_year | 1879
 warsaw | located_in | poland
 ulm | located_in | germany
 poland | located_in | europe
 germany | located_in | europe
+steventon | located_in | england
+yate | located_in | england
+england | located_in | united kingdom
+united kingdom | located_in | europe
+motihari | located_in | india
+india | located_in | asia
+monroeville | located_in | united states
+united states | located_in | north america
 """
 
 

@@ -33,7 +33,7 @@ from .engine.memory import history_text
 from .graph_store import SqliteGraphStore, get_store
 
 RESULTS_DIR = config.RESULTS_DIR
-SETS = ("familiar", "synthetic", "real")
+SETS = ("familiar", "synthetic", "realistic", "real")
 ABLATIONS = {
     "full": {"flags": {}, "reuse": True},
     "no_graph": {"flags": {}, "reuse": True, "empty_graph": True},
@@ -41,6 +41,7 @@ ABLATIONS = {
     "static_router": {"flags": {"static_router": True}, "reuse": True},
     "no_reuse": {"flags": {}, "reuse": False},
     "no_guard": {"flags": {"no_guard": True}, "reuse": True},
+    "no_compression": {"flags": {"no_compression": True}, "reuse": True},
 }
 SYNTHETIC_BATCH = "bench-synthetic"
 
@@ -54,7 +55,8 @@ _NUM = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 
 # ------------------------------------------------------------------------------------------- data
 def load_items(sets=SETS) -> list[dict]:
-    files = {"familiar": "familiar.json", "synthetic": "synthetic.json", "real": "real_world_TODO.json"}
+    files = {"familiar": "familiar.json", "synthetic": "synthetic.json", "realistic": "realistic.json",
+             "real": "real_world_TODO.json"}
     items = []
     for s in sets:
         path = config.BENCH_DATA_DIR / files[s]
@@ -105,7 +107,8 @@ def final_value(text: str) -> float | None:
     return float((nums[0] if m else nums[-1]).replace(",", ""))
 
 
-def grade(text: str, expected=None, forbidden=(), expect_abstain: bool = False, stopped: bool = False) -> str:
+def grade(text: str, expected=None, forbidden=(), expect_abstain: bool = False, stopped: bool = False,
+          tolerance: float | None = None) -> str:
     low = text.lower()
     abstained = stopped or bool(ABSTAIN.search(text))
     if expect_abstain:
@@ -114,7 +117,7 @@ def grade(text: str, expected=None, forbidden=(), expect_abstain: bool = False, 
         return "hallucinated"
     if isinstance(expected, (int, float)) and not isinstance(expected, bool):
         v = final_value(text)
-        ok = v is not None and math.isclose(v, expected, rel_tol=1e-6, abs_tol=1e-6)
+        ok = v is not None and math.isclose(v, expected, rel_tol=1e-6, abs_tol=tolerance or 1e-6)
     else:
         ok = bool(expected) and all(k.lower() in low for k in expected)
     if ok:
@@ -181,7 +184,7 @@ def _system_turn(store, question: str, conv_id: str, force_tier=None, reuse=True
     return {"answer": "".join(e["delta"] for e in events if e["type"] == "answer"), "turn_id": final["turn_id"],
             "tier": final["tier"], "classified": final["hallucination_type"], "tokens": final["tokens"]["total"],
             "confidence": final["confidence"], "stopped": final["stopped"], "from_cache": final["from_cache"],
-            "reused_state": bool(final["reused_state"])}
+            "reused_state": bool(final["reused_state"]), "compression": (final.get("compression") or {}).get("mode")}
 
 
 def _mark(turn_id: int | None, outcome: str) -> None:
@@ -203,7 +206,8 @@ def run_baseline(items: list[dict], temperature: float = 0.0) -> list[dict]:
         hist = []
         for k, t in enumerate(item["turns"]):
             text, tokens = _baseline_turn(t["question"], hist, temperature)
-            rows.append(_row(item, k, t, grade(text, t.get("expected"), t.get("forbidden", ()), t.get("expect_abstain", False)),
+            rows.append(_row(item, k, t, grade(text, t.get("expected"), t.get("forbidden", ()), t.get("expect_abstain", False),
+                                              tolerance=t.get("tolerance")),
                              {"tokens": tokens, "confidence": None}))
             hist.append({"question": t["question"], "answer": text})
     return rows
@@ -216,7 +220,8 @@ def run_system(store, items: list[dict], run_id: str, flags=None, reuse=True) ->
         for k, t in enumerate(item["turns"]):
             out = _system_turn(store, t["question"], conv, reuse=reuse, flags=flags)
             outcome = "error" if "error" in out else grade(out["answer"], t.get("expected"), t.get("forbidden", ()),
-                                                           t.get("expect_abstain", False), bool(out.get("stopped")))
+                                                           t.get("expect_abstain", False), bool(out.get("stopped")),
+                                                           t.get("tolerance"))
             _mark(out.get("turn_id"), outcome)
             rows.append(_row(item, k, t, outcome, {k2: v for k2, v in out.items() if k2 not in ("answer", "turn_id")}))
     return rows
@@ -233,10 +238,12 @@ def run_training(store, items: list[dict], run_id: str) -> list[dict]:
                 for prev in item["turns"][:k]:
                     setup = _system_turn(store, prev["question"], conv, reuse=False)
                     _mark(setup.get("turn_id"), grade(setup["answer"], prev.get("expected"), prev.get("forbidden", ()),
-                                                      prev.get("expect_abstain", False), bool(setup.get("stopped"))))
+                                                      prev.get("expect_abstain", False), bool(setup.get("stopped")),
+                                                      prev.get("tolerance")))
                 out = _system_turn(store, t["question"], conv, force_tier=tier, reuse=False)
                 outcome = "error" if "error" in out else grade(out["answer"], t.get("expected"), t.get("forbidden", ()),
-                                                               t.get("expect_abstain", False), bool(out.get("stopped")))
+                                                               t.get("expect_abstain", False), bool(out.get("stopped")),
+                                                               t.get("tolerance"))
                 _mark(out.get("turn_id"), outcome)
                 outcomes[tier] = {"outcome": outcome, "tokens": out["tokens"]}
                 kind = kind or out.get("classified")
@@ -338,7 +345,7 @@ def write_results(res: dict) -> Path:
 
 def main(argv=None) -> dict:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--sets", default="familiar,synthetic,real")
+    ap.add_argument("--sets", default="familiar,synthetic,realistic,real")
     ap.add_argument("--limit", type=int, help="only the first N items per set")
     ap.add_argument("--ablate", default="full", help=f"comma list of {list(ABLATIONS)}")
     ap.add_argument("--repeats", type=int, default=1)

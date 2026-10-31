@@ -66,7 +66,9 @@ def remote(url: str, c: Checks) -> None:
         for ex in EXAMPLES:
             conv = f"preflight-{ex['id']}"
             ok, last = True, ""
-            for q in ex["turns"]:
+            for k, q in enumerate(ex["turns"]):
+                if ex.get("separate"):
+                    conv = f"preflight-{ex['id']}-{k}"
                 r = h.post(f"{api}/chat", json={"question": q, "conversation_id": conv})
                 ok = ok and r.status_code == 200 and "tier" in r.json()
                 last = f"HTTP {r.status_code}"

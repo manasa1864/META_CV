@@ -1,0 +1,27 @@
+{
+ "description": "Realistic questions of the kind people actually ask: several facts at once, comparisons, facts followed by a calculation, follow-up chains, and pairs of similar calculations (which exercise compression). Answers come from the seed graph (python -m app.seed). Ages are phrased as year differences where the birthday falls after the event, so the expected answer is exact.",
+ "items": [
+  {"id": "real-01", "kind": "multi_fact", "graph_contains_answer": true, "turns": [{"question": "Who wrote Pride and Prejudice, when was it published, and where was the author born?", "type": "factual", "risks": ["factual.entity_error"], "expected": ["jane austen", "1813", "steventon"], "forbidden": ["bath"]}]},
+  {"id": "real-02", "kind": "comparison", "graph_contains_answer": true, "turns": [{"question": "Were Marie Curie and Albert Einstein born in the same country?", "type": "factual", "risks": ["factual.relation_error"], "expected": ["poland", "germany"], "forbidden": []}]},
+  {"id": "real-03", "kind": "multi_hop", "graph_contains_answer": true, "turns": [{"question": "On which continent was the author of 1984 born?", "type": "factual", "risks": ["factual.relation_error"], "expected": ["asia"], "forbidden": ["europe"]}]},
+  {"id": "real-04", "kind": "multi_fact", "graph_contains_answer": true, "turns": [{"question": "Where was the author of Harry Potter and the Philosopher's Stone born?", "type": "factual", "risks": ["factual.entity_error"], "expected": ["yate"], "forbidden": []}]},
+  {"id": "real-05", "kind": "mixed", "graph_contains_answer": true, "turns": [{"question": "How old was Harper Lee when To Kill a Mockingbird was published?", "type": "reasoning", "risks": ["faithful.premise", "faithful.logic"], "expected": 34, "forbidden": []}]},
+  {"id": "real-06", "kind": "mixed", "graph_contains_answer": true, "turns": [{"question": "How many years after Pride and Prejudice was 1984 published?", "type": "reasoning", "risks": ["faithful.premise", "faithful.logic"], "expected": 136, "forbidden": []}]},
+  {"id": "real-07", "kind": "mixed", "graph_contains_answer": true, "turns": [{"question": "Who was born first, George Orwell or Albert Einstein, and by how many years?", "type": "reasoning", "risks": ["faithful.premise", "faithful.logic"], "expected": 24, "forbidden": []}]},
+  {"id": "real-08", "kind": "false_premise", "graph_contains_answer": true, "turns": [{"question": "Why did Albert Einstein win the Nobel Prize in 1905?", "type": "factual", "risks": ["factual.overclaim"], "expect_abstain": true, "forbidden": ["1905"]}]},
+  {"id": "real-09", "kind": "calculation_pair", "turns": [{"question": "A shop sells 3 shirts at $24.99 each with 8% sales tax. What is the total?", "type": "reasoning", "risks": ["faithful.logic"], "expected": 80.97, "tolerance": 0.01, "forbidden": []}]},
+  {"id": "real-10", "kind": "calculation_pair", "turns": [{"question": "A shop sells 5 hats at $12.50 each with 8% sales tax. What is the total?", "type": "reasoning", "risks": ["faithful.logic"], "expected": 67.5, "tolerance": 0.01, "forbidden": []}]},
+  {"id": "real-11", "kind": "calculation_pair", "turns": [{"question": "A train covers 210 km at 84 km/h. How many hours does the trip take?", "type": "reasoning", "risks": ["faithful.logic"], "expected": 2.5, "forbidden": []}]},
+  {"id": "real-12", "kind": "calculation_pair", "turns": [{"question": "A car covers 315 km at 90 km/h. How many hours does the trip take?", "type": "reasoning", "risks": ["faithful.logic"], "expected": 3.5, "forbidden": []}]},
+  {"id": "real-13", "kind": "follow_up", "graph_contains_answer": true, "turns": [
+   {"question": "Who wrote 1984?", "type": "factual", "risks": ["factual.entity_error"], "expected": ["orwell"], "forbidden": []},
+   {"question": "How many years after his birth was it published?", "type": "consistency", "risks": ["faithful.context", "faithful.premise"], "expected": 46, "forbidden": []}]},
+  {"id": "real-14", "kind": "follow_up", "graph_contains_answer": true, "turns": [
+   {"question": "When was Pride and Prejudice published?", "type": "factual", "risks": ["factual.entity_error"], "expected": ["1813"], "forbidden": []},
+   {"question": "And how many years later was To Kill a Mockingbird published?", "type": "consistency", "risks": ["faithful.context", "faithful.premise"], "expected": 147, "forbidden": []}]},
+  {"id": "real-15", "kind": "follow_up", "graph_contains_answer": true, "turns": [
+   {"question": "Where was Marie Curie born?", "type": "factual", "risks": ["factual.entity_error"], "expected": ["warsaw"], "forbidden": []},
+   {"question": "Is that in the same country as Albert Einstein's birthplace?", "type": "consistency", "risks": ["faithful.context", "factual.relation_error"], "expected": ["poland", "germany"], "forbidden": []}]},
+  {"id": "real-16", "kind": "similar_fact", "graph_contains_answer": true, "turns": [{"question": "When was Pride and Prejudice published, and who wrote it?", "type": "factual", "risks": ["factual.entity_error"], "expected": ["1813", "austen"], "forbidden": []}]}
+ ]
+}

@@ -22,6 +22,8 @@ def record(store, example: dict) -> dict:
     conv = f"replay-{uuid.uuid4().hex[:8]}"
     turns = []
     for q in example["turns"]:
+        if example.get("separate"):
+            conv = f"replay-{uuid.uuid4().hex[:8]}"
         t0, events = time.perf_counter(), []
         for ev in pipeline.run(store, q, conversation_id=conv, source="replay", typing_delay=0):
             events.append({"t": round(time.perf_counter() - t0, 3), "event": ev})
