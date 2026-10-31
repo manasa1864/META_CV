@@ -2,6 +2,7 @@
 
     python -m app.seed
 """
+from . import graph_guard
 from .db import init_db
 from .graph_store import get_store
 from .ingest import record_manual_rule
@@ -61,18 +62,29 @@ germany | located_in | europe
 """
 
 
-def main() -> None:
+BATCH_ID = "seed-v1"
+
+
+def main(store=None) -> dict:
+    """Idempotent: re-running adds nothing new. Every fact carries source='seed' and batch_id=BATCH_ID,
+    and passes the write gate like any other write."""
     init_db()
-    store = get_store()
+    store = store or get_store()
+    store.init_schema()
     for name, functional, transitive in RELATIONS:
         store.define_relation(name, functional, transitive)
         record_manual_rule(name, functional, transitive)
-    n = 0
+    counts = {"accepted": 0, "new": 0, "quarantined": 0}
     for line in FACTS.strip().splitlines():
         s, r, o = (p.strip() for p in line.split("|"))
-        store.add_fact(s, r, o, "seed")
-        n += 1
-    print(f"seeded {n} facts and {len(RELATIONS)} relation rules")
+        res = graph_guard.add_fact_checked(store, s, r, o, "seed", added_by="seed", batch_id=BATCH_ID)
+        counts[res["status"]] += 1
+        counts["new"] += bool(res.get("created"))
+        if res["status"] == "quarantined":
+            print(f"quarantined: {s} | {r} | {o} - {res['reason']}")
+    print(f"seed: {counts['accepted']} facts present ({counts['new']} new), {counts['quarantined']} quarantined, "
+          f"{len(RELATIONS)} relation rules")
+    return counts
 
 
 if __name__ == "__main__":
