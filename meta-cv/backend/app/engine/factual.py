@@ -68,7 +68,8 @@ Do not add any other fact, name, date, number or detail, even if you believe it 
 If the verified facts do not fully answer the question, say briefly what could not be verified.
 If corrections to earlier answers are listed, point them out.
 A fact may carry a time note in brackets: keep it with the fact ("as of ...", "since ...", "until ..."), and
-never present a fact as current beyond what its note says. Facts listed as no longer current must not be
+never present a fact as current beyond what its note says. Facts noted "event N of M" are a story's events:
+tell them in that order. Facts listed as no longer current must not be
 presented as current; you may say they ended.
 Plain prose, concise."""
 
@@ -222,6 +223,18 @@ def start_model_check(c: dict) -> tuple:
             evidence)
 
 
+def _reversed(store, c: dict) -> str | None:
+    """For an acyclic relation (story order, located_in): the graph already leads from the object back to the
+    subject, so the claim reverses it. Returns that chain, or None."""
+    try:
+        if not store.relation_flags(c["relation"]).get("acyclic"):
+            return None
+        path = store.path_exists(c["object"], c["relation"], c["subject"])
+    except ValueError:
+        return None
+    return f" -[{c['relation']}]-> ".join(path) if path else None
+
+
 def _needs_model_check(store, c: dict) -> bool:
     """Would verify_node reach the model check? (Graph and cache say nothing, and the types fit.)"""
     try:
@@ -229,7 +242,7 @@ def _needs_model_check(store, c: dict) -> bool:
             return False
     except ValueError:
         pass
-    if entity_types.check(store, c["subject"], c["relation"], c["object"]):
+    if _reversed(store, c) or entity_types.check(store, c["subject"], c["relation"], c["object"]):
         return False
     cached = state_cache.get(claim_key(c))
     return not (cached and cached.get("status") == "accepted")
@@ -275,6 +288,11 @@ def verify_node(store, c: dict, trace: Trace, label: str, verified_only: bool = 
                     "original_object": c["object"]}
         yield trace.settle(ev, "fail", f"Graph contradicts it: {v['reason']}. Dropped.")
         return {**c, "status": "rejected", "source": "graph", "reason": v["reason"]}
+
+    backwards = _reversed(store, c)
+    if backwards:
+        yield trace.settle(ev, "fail", f"Graph has it the other way round: {backwards}. Dropped.")
+        return {**c, "status": "rejected", "source": "graph", "reason": f"the graph has it the other way round: {backwards}"}
 
     wrong_type = entity_types.check(store, c["subject"], c["relation"], c["object"])
     if wrong_type:
@@ -568,7 +586,7 @@ def answer(store, question: str, entities: list[str], trace: Trace, prior: dict 
     yield ev
     if accepted:
         facts = "\n".join(f"- {c['subject']} {c['relation'].replace('_', ' ')} {c['object']}"
-                          + (f" ({c['time_note']})" if c.get("time_note") else "") for c in accepted)
+                          + "".join(f" ({c[k]})" for k in ("detail", "time_note") if c.get(k)) for c in accepted)
         gaps = "\n".join(f"- {c.get('part_text') or c['subject'] + ' ' + c['relation'].replace('_', ' ') + ' ?'}"
                          for c in missing) or "(none)"
         fixes = "\n".join(f"- earlier: {_fmt(c['corrects'])}; now verified: {_fmt(c)}" for c in accepted if c.get("corrects"))

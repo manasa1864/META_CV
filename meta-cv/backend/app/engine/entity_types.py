@@ -19,9 +19,9 @@ from collections import Counter
 
 from .entities import normalize
 
-PERSON, PLACE, WORK, ORG, YEAR, NUMBER, ANY, TYPE = (
-    "person", "place", "work", "organization", "year", "number", "any", "type")
-ENTITY_TYPES = (PERSON, PLACE, WORK, ORG)
+PERSON, PLACE, WORK, ORG, EVENT, YEAR, NUMBER, ANY, TYPE = (
+    "person", "place", "work", "organization", "event", "year", "number", "any", "type")
+ENTITY_TYPES = (PERSON, PLACE, WORK, ORG, EVENT)
 TYPE_RELATION = "entity_type"
 
 SIGNATURES: dict[str, tuple[str, str]] = {
@@ -33,6 +33,7 @@ SIGNATURES: dict[str, tuple[str, str]] = {
     "ceo_of": (PERSON, ORG), "founded_by": (ORG, PERSON), "headquartered_in": (ORG, PLACE),
     "marries": (PERSON, PERSON), "married_to": (PERSON, PERSON), "spouse_of": (PERSON, PERSON),
     "parent_of": (PERSON, PERSON), "child_of": (PERSON, PERSON),
+    "event_in": (EVENT, WORK), "involves": (EVENT, PERSON), "follows": (EVENT, EVENT), "event_order": (EVENT, NUMBER),
     TYPE_RELATION: (ANY, TYPE),
 }
 

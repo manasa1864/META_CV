@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from . import audit, config, graph_guard, ingest as ingest_mod, llm, metrics, state_cache
 from .db import connect, init_db
-from .engine import pipeline
+from .engine import pipeline, plots
 from .engine.health import health
 from .examples import EXAMPLES
 from .graph_common import GraphLimitError, GraphUnavailable, ReadOnlyGraph
@@ -169,6 +169,17 @@ class Fact(BaseModel):
     valid_to: str | None = Field(default=None, pattern=r"^\d{4}(-\d{2}){0,2}$")
 
 
+class PlotEvent(BaseModel):
+    event: str = Field(min_length=1, max_length=200)    # a short description, unique within the work
+    involves: list[str] = Field(default_factory=list, max_length=20)
+
+
+class Plot(BaseModel):
+    work: str = Field(min_length=1, max_length=300)
+    events: list[PlotEvent] = Field(min_length=1, max_length=200)   # in story order
+    source: str | None = Field(default=None, max_length=300)
+
+
 class RelationDef(BaseModel):
     name: str
     functional: bool = False
@@ -198,6 +209,12 @@ def add_fact(f: Fact):
     """Through the write gate: accepted, or quarantined with the reason."""
     return graph_guard.add_fact_checked(store, f.subject, f.relation, f.object, f.source, added_by="api",
                                         valid_from=f.valid_from, valid_to=f.valid_to)
+
+
+@app.post("/plots", dependencies=[Depends(require_admin)])
+def add_plot(p: Plot):
+    """A work's events in story order, written through the write gate (engine/plots.py)."""
+    return plots.add_plot(store, p.work, [e.model_dump() for e in p.events], p.source, added_by="api")
 
 
 @app.post("/aliases", dependencies=[Depends(require_admin)])

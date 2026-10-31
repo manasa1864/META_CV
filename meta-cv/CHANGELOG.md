@@ -5,6 +5,23 @@ Numbers here are measured. Anything that needs the real model, or a real AuraDB 
 
 ## 2026-11-01
 
+### Plots as ordered events
+- **The gap:** plots did not fit subject-relation-object facts, because a story has an order.
+  "What happens in this book" could not be verified step by step.
+- **Now** (`engine/plots.py`):
+  - **Stored as events:** with `event_in`, `event_order`, `involves` and `follows` (transitive, acyclic).
+  - **Answered graph-first:** every event, in story order, with who takes part.
+  - **Order claims:** checked along the whole chain. A claim that reverses the order is contradicted without
+    a model call, for any acyclic relation.
+  - **Type checks:** events get the type `event`, so an event cannot involve a place.
+  - **Written through the write gate:** by the seed (Pride and Prejudice, 9 events, 43 facts) or `POST /plots`.
+- **Tested** (`tests/test_plots.py`, 4 tests):
+  - stored in order through the gate;
+  - answered from the graph in story order with no draft;
+  - a reversed order is contradicted with no judge or probe call;
+  - the API writes a plot.
+  - All earlier tests pass. The seed now loads 101 facts with none quarantined.
+
 ### Review page
 - **New tab `/review`** (`frontend/src/Review.tsx`). It shows three lists:
   - facts confirmed by Wikidata or the model checks (accept into the graph through the write gate, or reject);

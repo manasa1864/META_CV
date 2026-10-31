@@ -4,6 +4,7 @@
 """
 from . import graph_guard
 from .db import init_db
+from .engine import plots
 from .graph_store import get_store
 from .ingest import record_manual_rule
 
@@ -79,6 +80,21 @@ united states | located_in | north america
 
 BATCH_ID = "seed-v1"
 
+# Plots as ordered events (engine/plots.py): short descriptions in story order, with who takes part.
+PLOTS = {
+    "pride and prejudice": [
+        {"event": "bingley rents netherfield park", "involves": ["charles bingley"]},
+        {"event": "darcy slights elizabeth at the meryton assembly", "involves": ["fitzwilliam darcy", "elizabeth bennet"]},
+        {"event": "elizabeth refuses mr collins's proposal", "involves": ["mr collins", "elizabeth bennet"]},
+        {"event": "elizabeth rejects darcy's first proposal at hunsford", "involves": ["fitzwilliam darcy", "elizabeth bennet"]},
+        {"event": "darcy's letter explains his dealings with wickham", "involves": ["fitzwilliam darcy", "george wickham"]},
+        {"event": "lydia elopes with wickham", "involves": ["lydia bennet", "george wickham"]},
+        {"event": "darcy secretly arranges lydia's marriage", "involves": ["fitzwilliam darcy", "lydia bennet"]},
+        {"event": "bingley proposes to jane", "involves": ["charles bingley", "jane bennet"]},
+        {"event": "elizabeth accepts darcy's second proposal", "involves": ["fitzwilliam darcy", "elizabeth bennet"]},
+    ],
+}
+
 
 def main(store=None) -> dict:
     """Idempotent: re-running adds nothing new. Every fact carries source='seed' and batch_id=BATCH_ID,
@@ -97,8 +113,17 @@ def main(store=None) -> dict:
         counts["new"] += bool(res.get("created"))
         if res["status"] == "quarantined":
             print(f"quarantined: {s} | {r} | {o} - {res['reason']}")
+    for name, functional, transitive, acyclic in plots.RELATIONS:
+        record_manual_rule(name, functional, transitive)
+    for work, events in PLOTS.items():
+        res = plots.add_plot(store, work, events, "seed", added_by="seed", batch_id=BATCH_ID)
+        counts["accepted"] += res["accepted"]
+        counts["new"] += res["new"]
+        counts["quarantined"] += len(res["quarantined"])
+        for q in res["quarantined"]:
+            print(f"quarantined: {q['fact']} - {q['reason']}")
     print(f"seed: {counts['accepted']} facts present ({counts['new']} new), {counts['quarantined']} quarantined, "
-          f"{len(RELATIONS)} relation rules")
+          f"{len(RELATIONS) + len(plots.RELATIONS)} relation rules, {sum(map(len, PLOTS.values()))} plot events")
     return counts
 
 

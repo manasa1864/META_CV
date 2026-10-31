@@ -68,7 +68,8 @@ def factual_problems(question: str, text: str, accepted: list[dict], missing: li
     accepted = list(accepted) + [c for c in missing if c.get("ended")]
     missing = [c for c in missing if not c.get("ended")]
     # a date note like "2021-06" may come back as "2021-06", or as "June 2021" (year and month separately)
-    allowed = _blob(question, *(f"{c['subject']} {c['relation'].replace('_', ' ')} {c['object']} {c.get('time_note', '')} "
+    allowed = _blob(question, *(f"{c['subject']} {c['relation'].replace('_', ' ')} {c['object']} {c.get('detail', '')} "
+                                f"{c.get('time_note', '')} "
                                 f"{c.get('time_note', '').replace('-', ' ')}" for c in accepted),
                     *(f"{c['subject']} {c['relation'].replace('_', ' ')}" for c in missing),
                     *(f"{c['corrects']['subject']} {c['corrects']['object']}" for c in accepted if c.get("corrects")))

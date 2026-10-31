@@ -15,6 +15,7 @@ which parts are still needed. Off per question with the no_graph_first flag (ben
 import re
 
 from .. import llm, meter
+from . import plots
 from .trace import Trace
 
 MAX_PARTS = 6
@@ -29,6 +30,7 @@ Each part is one subject-relation-object triple with exactly one unknown "?" (a 
   earlier part n (1-based) when a part builds on it ("where was the author born" -> subject "#1").
 - relation: snake_case. Reuse a relation from the list whenever one fits, in its stored direction
   (book written_by person, character character_in book, person born_in place).
+- What happens in a book or film (its plot, its story, its events) is the lookup (?, event_in, <work>).
 - Only the parts the question actually asks for, at most 6. A question that asks for no facts has no parts.
 Return only JSON: {"parts": [{"subject": "...", "relation": "...", "object": "?"}]}"""
 
@@ -113,8 +115,11 @@ def _node(s, r, o, k, source="graph", reason=None, **extra) -> dict:
 def _lookup(store, known: str, relation: str, unknown_is_object: bool, k: int) -> list[dict]:
     name = store.resolve(known) if hasattr(store, "resolve") else known
     side = "subject" if unknown_is_object else "object"
-    return [_node(f["subject"], relation, f["object"], k) for f in store.facts_about(name, limit=LOOKUP_LIMIT)
-            if f["relation"] == relation and f[side] == name]
+    nodes = [_node(f["subject"], relation, f["object"], k) for f in store.facts_about(name, limit=LOOKUP_LIMIT)
+             if f["relation"] == relation and f[side] == name]
+    if relation == plots.EVENT_IN and not unknown_is_object:
+        nodes = plots.in_story_order(store, nodes)  # a plot: every event, told in story order, with who takes part
+    return nodes
 
 
 def _check(store, s: str, relation: str, o: str, k: int) -> list[dict]:
@@ -152,7 +157,7 @@ def fill(store, parts: list[dict], trace: Trace):
             unknown_is_object = p["object"] == UNKNOWN
             for known in (subjects if unknown_is_object else objects):
                 nodes += _lookup(store, known, p["relation"], unknown_is_object, k)
-            values[k] = sorted({n["object"] if unknown_is_object else n["subject"] for n in nodes})
+            values[k] = list(dict.fromkeys(n["object"] if unknown_is_object else n["subject"] for n in nodes))
         else:
             for s in subjects:
                 for o in objects:

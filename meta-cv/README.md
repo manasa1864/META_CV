@@ -98,6 +98,39 @@ The system answers "I can't answer this reliably" (and says why) when:
 
 A global breaker switches to **verified-only mode** when recent answers are mostly rejections, or when the model or graph keep failing. In that mode only graph facts count, and a banner says so.
 
+### Plots as ordered events
+
+"What happens in this book" is verified step by step, like any other fact (`engine/plots.py`).
+
+**How a plot is stored:** as events. Each event is an entity named by a short description, with:
+
+| fact | meaning |
+|---|---|
+| `(event, event_in, work)` | the event belongs to the work |
+| `(event, event_order, "n")` | its place in the story |
+| `(event, involves, character)` | who takes part |
+| `(event, follows, earlier event)` | it comes after the previous event (transitive and acyclic) |
+
+**How plot questions are answered:**
+- **Graph first:** the question is split into the lookup `(?, event_in, work)`. That returns every stored
+  event, sorted into story order and annotated "event 3 of 9; involves …".
+- **Told in order:** the answer is written in that order, from the graph alone.
+- **Order claims:** "X happens after Y" is checked along the whole `follows` chain. A claim that reverses the
+  order is contradicted, with no model call. The same check works for any acyclic relation, e.g. `located_in`.
+- **Type checks:** an event cannot involve a place, or belong to a person.
+
+**How plots get in:** through the write gate, either from the seed (Pride and Prejudice, nine events) or
+with `POST /plots` (admin):
+
+```json
+{"work": "...", "events": [{"event": "...", "involves": ["..."]}], "source": "..."}
+```
+
+The events are listed in story order.
+
+**Limits:** the order is a single main storyline; parallel subplots are not modelled. Plots of books that
+are not in the graph are drafted and checked one claim at a time, as before, with no order to check against.
+
 ### Independent checks: outside evidence and a separate judge
 
 Outside the graph, a claim used to be accepted only by the same model that drafted it: a judge, plus a blind
