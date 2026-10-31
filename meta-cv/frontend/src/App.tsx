@@ -61,7 +61,8 @@ type Assistant = {
 type Message = { id: number; role: 'user'; text: string } | Assistant
 type View = 'chat' | 'metrics' | 'results'
 
-const INTRO_KEY = 'prism-intro-autoplay'
+const INTRO_KEY = 'prism-intro-autoplay' // Settings switch, on by default
+const INTRO_SEEN_KEY = 'prism-intro-v4' // the intro plays once per browser session
 
 function stored(key: string): string | null {
   try {
@@ -1184,7 +1185,7 @@ function Settings({
         <div className="settings-row">
           <span>
             <b>Play the intro on start</b>
-            <small>Off by default; remembered on this device</small>
+            <small>Plays once per session; remembered on this device</small>
           </span>
           <label className="switch">
             <input type="checkbox" checked={autoIntro} onChange={(e) => setAutoIntro(e.target.checked)} />
@@ -1257,8 +1258,14 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean
 function PrismApp() {
   const prefersStill = window.matchMedia('(prefers-reduced-motion: reduce)').matches
   const [dreamy, setDreamy] = useState(() => stored('prism-dreamy') !== 'off' && !prefersStill)
-  const [autoIntro, setAutoIntroState] = useState(() => stored(INTRO_KEY) === 'on')
-  const [intro, setIntro] = useState(() => !prefersStill && stored(INTRO_KEY) === 'on')
+  const [autoIntro, setAutoIntroState] = useState(() => stored(INTRO_KEY) !== 'off')
+  const [intro, setIntro] = useState(() => {
+    try {
+      return !prefersStill && stored(INTRO_KEY) !== 'off' && !sessionStorage.getItem(INTRO_SEEN_KEY)
+    } catch {
+      return !prefersStill && stored(INTRO_KEY) !== 'off'
+    }
+  })
   const [settings, setSettings] = useState(false)
   const [evidence, setEvidence] = useState(true)
   const [showTrace, setShowTrace] = useState(true)
@@ -1312,7 +1319,14 @@ function PrismApp() {
     setViewState(next)
   }
 
-  const finishIntro = useCallback(() => setIntro(false), [])
+  const finishIntro = useCallback(() => {
+    try {
+      sessionStorage.setItem(INTRO_SEEN_KEY, 'seen')
+    } catch {
+      /* private mode: the intro just plays again next time */
+    }
+    setIntro(false)
+  }, [])
   function replayIntro() {
     setSettings(false)
     setDreamy(true)
