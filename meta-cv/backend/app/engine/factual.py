@@ -8,6 +8,8 @@ A node is accepted only after it is checked, and the walk moves on only from
 accepted nodes:
   1. graph     - the knowledge graph supports it (directly or by transitivity),
                  or contradicts it and holds the single correct value (corrected)
+     types     - not in the graph, and its subject or object is the wrong kind of thing for the
+                 relation (entity_types.py): dropped at once, with no model call
   2. cache     - it was model-verified recently (claims expire after CLAIM_TTL_HOURS)
   3. model     - not in the graph: an independent true/false judgment AND a blind
                  probe (asked without seeing the claimed object) must agree.
@@ -28,7 +30,7 @@ import time
 from .. import config, llm, state_cache
 from ..db import connect
 from ..graph_common import EXCLUSIVE_RELATIONS
-from . import compression, decompose, guardrails, temporal
+from . import compression, decompose, entity_types, guardrails, temporal
 from .router import caught
 from .trace import Trace
 
@@ -234,6 +236,11 @@ def verify_node(store, c: dict, trace: Trace, label: str, verified_only: bool = 
         yield trace.settle(ev, "fail", f"Graph contradicts it: {v['reason']}. Dropped.")
         return {**c, "status": "rejected", "source": "graph", "reason": v["reason"]}
 
+    wrong_type = entity_types.check(store, c["subject"], c["relation"], c["object"])
+    if wrong_type:
+        yield trace.settle(ev, "fail", f"Type check: {wrong_type}. Dropped without a model call.")
+        return {**c, "status": "rejected", "source": "types", "reason": wrong_type}
+
     if verified_only:
         yield trace.settle(ev, "warn", "Not in the graph, and verified-only mode accepts graph facts only. Kept out.")
         return {**c, "status": "unverified", "source": "graph", "reason": "verified-only mode"}
@@ -270,6 +277,8 @@ def _caught_by_checks(checked: list[dict]) -> list[dict]:
                               f"{c['subject']} {c['relation']} {c['original_object']} -> {c['object']} ({c['reason']})"))
         elif c["status"] == "rejected" and c["source"] in ("graph", "model"):
             out.append(caught("factual.entity_error", "factual", "dropped", f"{_fmt(c)}: {c['reason']}"))
+        elif c["status"] == "rejected" and c["source"] == "types":
+            out.append(caught("factual.relation_error", "factual", "dropped", f"{_fmt(c)}: {c['reason']}"))
     return out
 
 

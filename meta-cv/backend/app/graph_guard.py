@@ -1,6 +1,8 @@
 """Write gate: every write to the fact graph goes through add_fact_checked().
 
 A fact is written only if it passes: validate (no contradiction of a single-valued relation),
+the relation's type signature (engine/entity_types.py: no year where a place belongs, no place where a
+person belongs),
 no incompatible_with / contradicts clash for the same subject, no cycle or self-loop in an acyclic
 relation, and no new name that looks like a near-duplicate of an existing entity. Anything else
 is quarantined with its reason (a table in the state database, never nodes in the fact graph),
@@ -11,6 +13,7 @@ import time
 
 from . import state_cache
 from .db import connect
+from .engine import entity_types
 from .engine.entities import alias_candidates, normalize
 from .graph_common import EXCLUSIVE_RELATIONS, rel_name
 
@@ -44,6 +47,9 @@ def problems(store, s: str, r: str, o: str) -> list[str]:
         out.append(v["reason"])
     if v["verdict"] == "supported":
         return []
+    wrong_type = entity_types.check(store, s, r, o)
+    if wrong_type:
+        out.append(wrong_type)
     flags = store.relation_flags(r)
     rs, ro = store.resolve(s), store.resolve(o)
     if flags.get("acyclic"):

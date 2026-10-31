@@ -5,6 +5,24 @@ Numbers here are measured. Anything that needs the real model, or a real AuraDB 
 
 ## 2026-11-01
 
+### Type checks on facts
+- **The gap:** nothing knew what kind of thing an entity is. "Born in 1813" or "written by Warsaw" went to
+  the model judge like any other claim, and could be written into the graph.
+- **Now** (`engine/entity_types.py`):
+  - **Signatures:** relations have type signatures (person, place, work, organization, year, number).
+  - **Types from the graph:** entity types come from explicit `entity_type` facts, or are inferred from the
+    facts an entity already takes part in.
+  - **Rejected without a model call:** a claim that clearly does not fit, in verification and at the write
+    gate (quarantined).
+  - **Graph first:** a claim the graph can correct is still corrected before the type check.
+- **Tested** (`tests/test_entity_types.py`, 4 tests):
+  - type inference, mixed evidence and explicit types;
+  - clear-evidence-only rejection, including "1984" as a title and dates with a year;
+  - a wrong-type claim dropped with no judge or probe call;
+  - the write gate quarantines it.
+  - All earlier tests pass unchanged. The seed and the synthetic benchmark facts produce no flags.
+- **Not measured yet:** how many model calls it saves on real traffic.
+
 ### Time-sensitive facts
 - **The gap:**
   - The router flagged questions about the present (`time_sensitive`), but nothing acted on the flag.

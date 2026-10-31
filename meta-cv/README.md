@@ -97,6 +97,42 @@ The system answers "I can't answer this reliably" (and says why) when:
 
 A global breaker switches to **verified-only mode** when recent answers are mostly rejections, or when the model or graph keep failing. In that mode only graph facts count, and a banner says so.
 
+### Type checks
+
+`engine/entity_types.py` rejects claims whose subject or object is the wrong kind of thing, for example
+"Jane Austen born in 1775" (a year where a place belongs) or "Pride and Prejudice written by Warsaw"
+(a place where a person belongs).
+
+**Signatures:** `SIGNATURES` says what each common relation connects:
+- `born_in`: person → place
+- `birth_year`: person → year
+- `written_by`: work → person
+- `located_in`: place → place
+- `ceo_of`: person → organisation, and others
+
+**Where an entity's type comes from:** the graph, never the model.
+- An explicit `(x, entity_type, person)` fact wins.
+- Otherwise it is inferred from the facts the entity already takes part in: the subject of `born_in` is a
+  person, the object of `located_in` is a place.
+- Mixed evidence means "unknown".
+
+**When a claim is rejected:** only on clear evidence.
+- A year slot gets something with no year in it.
+- An entity slot gets something the graph types differently.
+- A person or place slot gets a bare number.
+
+Unknown types pass, relations without a signature pass, and titles that look like years ("1984") are
+fine where a work belongs.
+
+**Where it runs:**
+- **Claim verification:** after the graph lookup and before any model call. A wrong-type claim the graph
+  knows nothing about is dropped at once (`factual.relation_error`), with no judge or probe call. A claim
+  the graph can correct is still corrected first.
+- **The write gate:** wrong-type facts are quarantined instead of written.
+
+The seed and the synthetic benchmark set pass with nothing flagged. To cover more relations, add them to
+`SIGNATURES`.
+
 ### Time-sensitive facts
 
 Facts that change (offices, CEOs, records) can carry a validity period: `valid_from` / `valid_to` as `YYYY`,
