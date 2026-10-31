@@ -18,7 +18,12 @@ An accepted node must also not clash with an earlier node of the answer or with 
 the conversation already established: same subject and a single-valued relation with a
 different object, or objects the graph marks incompatible_with / contradicts each other.
 Anything else is rejected or left unverified and kept out of the answer.
-Nodes that depend on a rejected node are skipped. Accepted facts then pass the freshness review
+Nodes that depend on a rejected node are skipped.
+
+Speed (parallel.py): a claim's independent check and blind probe run at the same time, and claims that
+depend on no other node have their model checks started together as soon as the draft is in. Nodes are
+still accepted, shown and conflict-checked strictly in order, and a node that depends on another is never
+checked before that node has passed. Accepted facts then pass the freshness review
 (temporal.py): a validity period travels with its fact, and for a question about the present an ended fact
 is dropped and an old or model-only one is kept with a date note. The composed prose then passes the
 faithfulness guard (guardrails.py) before it is returned.
@@ -30,7 +35,7 @@ import time
 from .. import config, llm, state_cache
 from ..db import connect
 from ..graph_common import EXCLUSIVE_RELATIONS
-from . import compression, decompose, entity_types, guardrails, temporal
+from . import compression, decompose, entity_types, guardrails, parallel, temporal
 from .router import caught
 from .trace import Trace
 
@@ -198,21 +203,43 @@ def _stored_values(store, subject: str, relation: str) -> list[str]:
     return sorted({f["object"] for f in store.facts_about(subject) if f["subject"] == s and f["relation"] == relation})
 
 
-def _model_check(c: dict) -> dict:
-    judge = llm.chat_json(JUDGE_SYSTEM, f"Claim: {c['subject']} {c['relation'].replace('_', ' ')} {c['object']}")
+def start_model_check(c: dict) -> tuple:
+    """Start the independent judgment and the blind probe at the same time (they do not see each other)."""
+    return (parallel.submit(llm.chat_json, JUDGE_SYSTEM, f"Claim: {c['subject']} {c['relation'].replace('_', ' ')} {c['object']}"),
+            parallel.submit(llm.chat_json, PROBE_SYSTEM, f"subject: {c['subject']}\nrelation: {c['relation']}\nobject: ?"))
+
+
+def _needs_model_check(store, c: dict) -> bool:
+    """Would verify_node reach the model check? (Graph and cache say nothing, and the types fit.)"""
+    try:
+        if store.validate(c["subject"], c["relation"], c["object"])["verdict"] != "unknown":
+            return False
+    except ValueError:
+        pass
+    if entity_types.check(store, c["subject"], c["relation"], c["object"]):
+        return False
+    cached = state_cache.get(claim_key(c))
+    return not (cached and cached.get("status") == "accepted")
+
+
+def _model_check(c: dict, started: tuple | None = None) -> dict:
+    judge_f, probe_f = started or start_model_check(c)
+    judge = judge_f.result()
     verdict = str(judge.get("verdict", "unsure")).lower() if isinstance(judge, dict) else "unsure"
     try:
         conf = float(judge.get("confidence", 0)) if isinstance(judge, dict) else 0.0
     except (TypeError, ValueError):
         conf = 0.0
-    probe = llm.chat_json(PROBE_SYSTEM, f"subject: {c['subject']}\nrelation: {c['relation']}\nobject: ?")
+    probe = probe_f.result()
     answers = [str(a) for a in (probe.get("answers") or [])] if isinstance(probe, dict) else []
     matched = any(same_entity(a, c["object"]) for a in answers)
     return {"verdict": verdict, "confidence": conf, "probe_answers": answers[:5], "probe_matched": matched}
 
 
-def verify_node(store, c: dict, trace: Trace, label: str, verified_only: bool = False):
-    """Generator: yields trace events, returns the claim with status/source/reason set."""
+def verify_node(store, c: dict, trace: Trace, label: str, verified_only: bool = False, started: tuple | None = None):
+    """Generator: yields trace events, returns the claim with status/source/reason set.
+
+    started: this claim's model check, already running (pre-started for claims that depend on no other node)."""
     ev = trace.start("factual", f"{label}: {_fmt(c)}", "checking against the knowledge graph")
     yield ev
 
@@ -250,8 +277,9 @@ def verify_node(store, c: dict, trace: Trace, label: str, verified_only: bool = 
         yield trace.settle(ev, "ok", "Not in the graph, but this exact node was verified recently (cache). Moving on.")
         return {**c, "status": "accepted", "source": "cache", "reason": "previously model-verified"}
 
-    yield trace.settle(ev, "running", "Not in the graph. Running an independent check and a blind probe...")
-    m = _model_check(c)
+    yield trace.settle(ev, "running", "Not in the graph. Independent check and blind probe "
+                       + ("(already running alongside the other nodes)..." if started else "(run together)..."))
+    m = _model_check(c, started)
     probe = ", ".join(m["probe_answers"]) or "no answer"
     if m["verdict"] == "false" and m["confidence"] >= 0.5:
         yield trace.settle(ev, "fail", f"Independent check says false ({m['confidence']:.2f}). Dropped.")
@@ -394,6 +422,26 @@ def _draft_and_check(store, question: str, shown: list[dict], relations: list[st
     yield trace.settle(ev, "ok" if claims else "fail", f"{len(claims)} node(s) to verify, in order")
 
     by_triple = {triple(a): a for a in answered}
+    # Claims that depend on no other node need their model check whatever the others turn out to be,
+    # so those checks start together now; each is still awaited, and accepted, in order below.
+    started = {i: start_model_check(c) for i, c in enumerate(claims)
+               if parallel.enabled() and not verified_only and not c["depends_on"] and triple(c) not in by_triple
+               and _needs_model_check(store, c)}
+    if len(started) > 1:
+        yield trace.note("factual", "Checking independent nodes in parallel",
+                         f"{len(started)} node(s) need a model check and depend on no other node, so their checks "
+                         "run at the same time. They are still accepted one by one, in order.", "info")
+    try:
+        checked, found = yield from _walk_claims(store, claims, by_triple, earlier, trace, verified_only, answered, started)
+    finally:
+        for f in (f for pair in started.values() for f in pair):
+            f.cancel()  # only matters if the walk stopped early (budget, error): don't leave work queued
+    return checked, _caught_by_checks(checked) + found
+
+
+def _walk_claims(store, claims: list[dict], by_triple: dict, earlier: list[dict], trace: Trace, verified_only: bool,
+                 answered: list[dict], started: dict):
+    """Generator: verify the drafted claims strictly in order. Returns (checked, conflict findings)."""
     checked: list[dict] = []
     found: list[dict] = []
     for i, c in enumerate(claims):
@@ -407,11 +455,11 @@ def _draft_and_check(store, question: str, shown: list[dict], relations: list[st
                              f"Skipped: depends on node {broken[0] + 1}, which did not pass.", "fail")
             checked.append({**c, "status": "skipped", "source": None, "reason": f"depends on node {broken[0] + 1}"})
             continue
-        node = yield from verify_node(store, c, trace, label, verified_only)
+        node = yield from verify_node(store, c, trace, label, verified_only, started.get(i))
         if node["status"] == "accepted":
             node = yield from _check_conflicts(store, node, checked, earlier, trace, label, found, answered)
         checked.append(node)
-    return checked, _caught_by_checks(checked) + found
+    return checked, found
 
 
 STATE_ANSWER_SYSTEM = """Answer the question using ONLY the numbered verified facts.

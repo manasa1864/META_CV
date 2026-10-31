@@ -5,6 +5,25 @@ Numbers here are measured. Anything that needs the real model, or a real AuraDB 
 
 ## 2026-11-01
 
+### Faster checking
+- **The gap:** every claim the graph did not hold waited for two model calls, one after the other: the judge
+  and the blind probe. Claims were checked strictly one at a time, even when they did not depend on each other.
+- **Now** (`engine/parallel.py`):
+  - a claim's judge and probe run at the same time;
+  - claims that depend on no other node have their model checks started together as soon as the draft is in;
+  - acceptance, the trace and conflict checks stay strictly in order;
+  - a dependent claim is still checked only after its parent passed;
+  - the per-question meter is shared across threads (with a lock), so call counts and budgets stay exact.
+- **Setting:** `CHECK_WORKERS` (default 6); `1` restores one-by-one checking.
+- **Measured** (scripted model, 0.3 s per call, four independent claims): 2.65 s before, 0.44 s now, same answer.
+- **Tested** (`tests/test_parallel_checks.py`, 3 tests):
+  - faster, with path and trace order unchanged and every call metered;
+  - a dependent node costs no model call when its parent fails;
+  - `CHECK_WORKERS=1` gives the same result one by one.
+  - All earlier tests pass with parallel checking on.
+- **Not measured yet:** the latency gain against the real model API, and whether 6 parallel calls stay
+  within its rate limits.
+
 ### Type checks on facts
 - **The gap:** nothing knew what kind of thing an entity is. "Born in 1813" or "written by Warsaw" went to
   the model judge like any other claim, and could be written into the graph.

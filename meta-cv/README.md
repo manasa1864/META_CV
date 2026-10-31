@@ -97,6 +97,26 @@ The system answers "I can't answer this reliably" (and says why) when:
 
 A global breaker switches to **verified-only mode** when recent answers are mostly rejections, or when the model or graph keep failing. In that mode only graph facts count, and a banner says so.
 
+### Faster checking
+
+A claim the graph does not hold costs two model calls: the independent judgment and the blind probe.
+Before, every such claim waited for both calls in turn. Now (`engine/parallel.py`, `factual.py`):
+- **Judge and probe together:** a claim's judge and blind probe run at the same time. They never see
+  each other's answer, so nothing about the check changes.
+- **Independent claims in parallel:** claims that depend on no other node have their model checks started
+  together as soon as the draft is in. Whatever the other nodes turn out to be, those checks are needed anyway.
+- **Order is unchanged:** nodes are still awaited, accepted, shown and conflict-checked one by one, in order.
+- **Dependent claims wait:** a node that depends on another is checked only after that node has passed,
+  so no call is spent on a node that will be skipped.
+
+**Measured** with the scripted model, each call taking 0.3 s, on four independent claims: 2.65 s one by
+one, 0.44 s in parallel, with the same answer.
+
+**Settings:**
+- `CHECK_WORKERS` (default 6) is the size of the shared pool. Lower it if the model API rate-limits you;
+  `1` restores one-by-one checking.
+- Every parallel call is counted on its question's meter, so the per-question budgets still hold.
+
 ### Type checks
 
 `engine/entity_types.py` rejects claims whose subject or object is the wrong kind of thing, for example

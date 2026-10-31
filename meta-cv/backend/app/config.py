@@ -97,6 +97,7 @@ USER_SIGNAL_WEIGHT = _num("USER_SIGNAL_WEIGHT", 1.0)
 MAX_LLM_CALLS = _int("MAX_LLM_CALLS", 40)
 MAX_GRAPH_CALLS = _int("MAX_GRAPH_CALLS", 400)
 MAX_TOKENS = _int("MAX_TOKENS", 60000)
+CHECK_WORKERS = _int("CHECK_WORKERS", 6)   # model checks run at the same time (engine/parallel.py); 1 = one by one
 
 # Global breaker: switch to verified-only mode when recent turns look unhealthy
 BREAKER_WINDOW = _int("BREAKER_WINDOW", 20)
