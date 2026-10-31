@@ -104,12 +104,12 @@ Fewer tokens, with no check that catches a hallucination skipped (`engine/compre
 
 | kind | what happens | safety net |
 |---|---|---|
-| trimmed prompts | the claim draft sees only the ~30 known facts and ~20 relation names most relevant to the question; follow-ups get a compact history | facts about the question's own entities always rank first |
+| trimmed prompts | the claim draft sees the ~30 known facts and ~20 relation names most relevant to the question; follow-ups get a compact history | **keep rules:** facts from this conversation, facts sharing a word with the question, and each named entity's top facts are never cut. **lost-context check:** if a claim cannot be verified and a cut fact or relation concerns the same thing, the draft is redone untrimmed; if a follow-up mentions something only in the cut history, the full history is used |
 | answer from verified facts | a factual question similar to one answered before is tried against that question's verified facts first | facts re-checked against the graph; answer must pass the faithfulness guard; otherwise the full check runs |
 | reuse a verified calculation | a similar calculation adapts the verified steps in one solution | arithmetic machine-checked and logic-checked; if either fails, the full cross-check runs. Trade-off: the independent second solution is skipped |
 | exact repeat | the stored verified answer is reused at zero model calls | re-validated against the graph first |
 
-`tests/test_compression.py` counts the model calls each kind saves: two calls instead of four for a similar calculation in balanced mode, and no new claim chain for a similar fact question. Measure the token effect on real traffic with `python -m app.bench --ablate full,no_compression`. The Metrics tab reports average tokens per answer for each kind of reuse.
+`tests/test_compression.py` counts the model calls each kind saves: two calls instead of four for a similar calculation in balanced mode, and no new claim chain for a similar fact question. Measure the token effect on real traffic with `python -m app.bench --ablate full,no_compression`. The Metrics tab reports average tokens per answer for each kind of reuse, and how often trimming had to be undone.
 
 ## Tools
 

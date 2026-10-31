@@ -131,6 +131,7 @@ MIGRATIONS = [
     ("turns", "degraded", "TEXT"),
     ("turns", "scope", "TEXT"),              # whose feedback this is (conversation scope)
     ("turns", "reuse_kind", "TEXT"),         # exact_repeat | state_answer | template | similar_state
+    ("turns", "compression_context", "TEXT"),  # JSON: facts/relations kept and cut, redrafts, history expansion
 ]
 
 

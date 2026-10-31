@@ -47,7 +47,8 @@ def summary() -> dict:
     with connect() as conn:
         rows = [dict(r) for r in conn.execute(
             "SELECT id, hallucination_type, tier, from_cache, reused_state, caught, prompt_tokens, completion_tokens, "
-            "saved_tokens, source, outcome, signal_quality, correct, feedback, confidence, stopped, reuse_kind FROM turns "
+            "saved_tokens, source, outcome, signal_quality, correct, feedback, confidence, stopped, reuse_kind, "
+            "compression_context FROM turns "
             "WHERE source NOT IN ('scale', 'loadtest', 'replay') ORDER BY id"
         )]
     for r in rows:
@@ -91,6 +92,17 @@ def summary() -> dict:
         by_reuse.append({"kind": kind, "turns": len(rs), "avg_tokens": _avg(r["tokens"] for r in rs),
                          "verified_rate": _avg(r["success"] for r in rs)})
 
+    contexts = [json.loads(r["compression_context"]) for r in rows if r["compression_context"]]
+    trimmed = [c for c in contexts if c.get("facts_cut") or c.get("relations_cut") or c.get("history_trimmed")
+               or c.get("history_expanded")]
+    context_check = {
+        "trimmed_answers": len(trimmed),
+        "redrafted": sum(bool(c.get("redrafted")) for c in trimmed),
+        "history_expanded": sum(bool(c.get("history_expanded")) for c in trimmed),
+        "facts_cut": sum(c.get("facts_cut", 0) for c in trimmed),
+        "facts_kept": sum(c.get("facts_kept", 0) for c in trimmed),
+    }
+
     outcomes = Counter(r["result"] or "unknown" for r in rows)
     signals = Counter(r["signal"] or "none" for r in rows)
     stops = Counter(json.loads(r["stopped"])["reason"] for r in rows if r["stopped"])
@@ -114,6 +126,7 @@ def summary() -> dict:
         "caught_by_risk": [{"risk": k, "label": router.RISKS.get(k, k), "count": v} for k, v in by_risk.most_common()],
         "by_tier": by_tier,
         "by_reuse": by_reuse,
+        "context_check": context_check,
         "router": router.table(),
         "router_frozen": config.ROUTER_FROZEN,
         "timeline": timeline[-500:],

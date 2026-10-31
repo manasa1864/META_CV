@@ -152,4 +152,82 @@ def test_no_compression_flag_turns_every_kind_off(fake_llm):
     store = SqliteGraphStore()
     run(store, SHIRTS, "balanced")
     second = final(run(store, HATS, "balanced", flags={"no_compression": True}))
-    assert second["compression"] == {"mode": "similar_state", "prompt_trim": False}
+    assert second["compression"]["mode"] == "similar_state" and second["compression"]["prompt_trim"] is False
+    assert second["compression"]["context"] == {}
+
+
+# ------------------------------------------------------------------ the lost-context check for trimmed prompts
+def test_keep_rules_never_cut_conversation_facts_question_words_or_entities():
+    from app.engine import compression
+
+    entity = [{"subject": "jane austen", "relation": f"hobby_{i}", "object": f"thing {i}"} for i in range(60)]
+    asked = {"subject": "jane austen", "relation": "born_in", "object": "steventon"}
+    earlier = {"subject": "elizabeth bennet", "relation": "marries", "object": "fitzwilliam darcy"}
+    other = {"subject": "warsaw", "relation": "located_in", "object": "poland"}
+    shown, cut = compression.split_facts(entity + [asked, earlier, other], "Where was Jane Austen born?",
+                                         ["Jane Austen"], must_keep=[earlier])
+    assert asked in shown and earlier in shown                 # shares 'born' / established in this conversation
+    assert len(shown) <= compression.FACT_CAP + 2 and len(shown) + len(cut) == 63
+    assert other in cut and all(f in shown for f in entity[:compression.PER_ENTITY_MIN])
+
+
+def _crowded_store():
+    s = SqliteGraphStore()
+    for i in range(60):
+        s.add_fact("jane austen", f"hobby_{i}", f"thing {i}", "seed")
+    s.add_fact("jane austen", "raised_in", "steventon", "seed")   # needed, but shares no word with the question
+    return s
+
+
+def test_context_check_redrafts_untrimmed_when_trimming_hid_a_needed_fact(fake_llm):
+    fake_llm.on(ROUTER, lambda u, t: {"type": "factual", "entities": ["Jane Austen"]})
+    fake_llm.on(DRAFT, lambda u, t: {"claims": [{"subject": "jane austen", "relation": "raised_in", "object": "steventon"}]}
+                if "raised_in" in u else {"claims": [{"subject": "jane austen", "relation": "grew_up_in", "object": "bath"}]})
+    fake_llm.on("Judge whether ONE claim", lambda u, t: {"verdict": "unsure", "confidence": 0.3})
+    fake_llm.on("Answer from your own knowledge", lambda u, t: {"answers": []})
+    fake_llm.on(COMPOSE, lambda u, t: "Jane Austen was raised in Steventon.")
+    events = run(_crowded_store(), "Where did Jane Austen grow up?")
+    f = final(events)
+    assert "raised_in" not in fake_llm.prompts[DRAFT][0] and "raised_in" in fake_llm.prompts[DRAFT][1]
+    assert f["path"][0]["object"] == "steventon" and f["path"][0]["status"] == "accepted"
+    ctx = f["compression"]["context"]
+    assert ctx["redrafted"] is True and ctx["facts_cut"] > 0 and "jane austen" in ctx["redraft_reason"]
+    assert any(e.get("title") == "Context check: trimming may have hidden something" for e in events if e["type"] == "step")
+
+
+def test_context_check_passes_without_a_redraft_when_every_claim_verified(fake_llm):
+    store = _crowded_store()
+    store.add_fact("jane austen", "born_in", "steventon", "seed")
+    fake_llm.on(ROUTER, lambda u, t: {"type": "factual", "entities": ["Jane Austen"]})
+    fake_llm.on(DRAFT, lambda u, t: {"claims": [{"subject": "jane austen", "relation": "born_in", "object": "steventon"}]})
+    fake_llm.on(COMPOSE, lambda u, t: "Jane Austen was born in Steventon.")
+    events = run(store, "Where was Jane Austen born?")
+    f = final(events)
+    assert fake_llm.calls.count(DRAFT) == 1 and not f["compression"]["context"].get("redrafted")
+    assert f["compression"]["context"]["facts_cut"] > 0
+    assert any(e.get("title") == "Context check passed" for e in events if e["type"] == "step")
+
+
+def test_history_is_restored_when_the_question_refers_to_a_cut_turn():
+    from app import meter
+    from app.engine import compression
+
+    people = ["austen", "orwell", "curie", "einstein", "newton", "darwin"]
+    hist = [{"question": f"Tell me about {p}", "answer": f"Some facts about {p}."} for p in people]
+    m = meter.new_meter({})
+    with meter.metering(m):
+        shown, _, expanded = compression.compact_history(hist, "Going back to Austen, what else?")
+        assert expanded and len(shown) == 6 and m["compression"]["history_expanded"] is True
+        shown, size, expanded = compression.compact_history(hist, "And what about Darwin?")
+        assert not expanded and len(shown) == compression.HISTORY_TURNS and size == compression.HISTORY_ANSWER_CHARS
+
+
+def test_metrics_report_how_often_trimming_had_to_be_undone(fake_llm):
+    from fastapi.testclient import TestClient
+
+    from app import main
+
+    test_context_check_redrafts_untrimmed_when_trimming_hid_a_needed_fact(fake_llm)
+    with TestClient(main.app) as client:
+        check = client.get("/metrics").json()["context_check"]
+    assert check["trimmed_answers"] == 1 and check["redrafted"] == 1 and check["facts_cut"] > 0

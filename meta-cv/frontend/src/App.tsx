@@ -1013,7 +1013,9 @@ function Evidence({ final, showTrace }: { final: Final; showTrace: boolean }) {
               {final.router?.learned ? ' · learned route' : ''}
               {final.classifier === 'fallback' ? ' · keyword fallback' : ''}
               {final.from_cache ? ' · cache hit' : ''}
-              {final.degraded ? ' · graph snapshot' : ''} <b>{final.tokens.calls} calls</b>
+              {final.degraded ? ' · graph snapshot' : ''}
+              {final.compression?.context?.redrafted ? ' · trimmed context restored' : ''}
+              {final.compression?.context?.history_expanded ? ' · full history used' : ''} <b>{final.tokens.calls} calls</b>
             </div>
           )}
         </div>

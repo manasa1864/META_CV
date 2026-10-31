@@ -35,6 +35,15 @@ Numbers here are measured. Anything that needs the real model, or a real AuraDB 
   - on a graph with 120 irrelevant facts about the entity, the draft prompt shrinks to under half its length.
 - **Not measured yet:** token savings on real traffic. Run `python -m app.bench --ablate full,no_compression`.
 
+### Lost-context check for trimmed prompts
+- **Keep rules:** never cut facts established in this conversation, facts sharing a word with the question, or each named entity's 5 most relevant facts.
+  - An entity's own name no longer counts as "shared": counting it meant every fact about the entity looked relevant and nothing was ever trimmed. This was a bug the new tests found.
+- **After verification:** if any claim could not be verified and a cut fact or relation concerns the same entity or relation, the draft is redone untrimmed.
+  - Claims the graph supports were checked against the full graph, so trimming cannot have changed them.
+- **Follow-ups:** if the question mentions something that only the cut part of the history contains, the full history is used.
+- **Recorded per answer:** facts and relations kept and cut, whether the draft was redone and why, and whether the full history was used (`final.compression.context`). The Metrics tab shows how often trimming had to be undone.
+- **Tested** (`tests/test_compression.py`): a needed fact that trimming hid is recovered by the redraft; no redraft when every claim verifies; the full history is restored when a follow-up refers to a cut turn.
+
 ## 2026-10-31
 
 ### Store contract and AuraDB hardening (C0, C2)

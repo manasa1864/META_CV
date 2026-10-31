@@ -125,7 +125,7 @@ def _solve(store, question: str, mode: str, conversation_id: str | None, force_t
 
     ev = trace.start("router", "Classifying the hallucination risk and choosing a tier")
     yield ev
-    r = router.route(question, memory.history_text(hist), force_tier)
+    r = router.route(question, memory.history_text(hist, question), force_tier)
     if flags.get("static_router") and not force_tier:
         r = {**r, "tier": router.SPECIALIST[r["type"]], "learned": False}
     yield trace.settle(ev, "ok", _route_detail(r), tier=r["tier"])
@@ -203,15 +203,16 @@ def _log(conversation_id, question, result, meter_, source, degraded) -> int:
         cur = conn.execute(
             "INSERT INTO turns(conversation_id, question, hallucination_type, tier, mode, confidence, from_cache, "
             "reused_state, caught, prompt_tokens, completion_tokens, saved_tokens, answer, commitments, source, "
-            "outcome, signal_quality, risks, stopped, degraded, scope, reuse_kind, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "outcome, signal_quality, risks, stopped, degraded, scope, reuse_kind, compression_context, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (conversation_id, question, result["hallucination_type"], result["tier"], result.get("mode"),
              result["confidence"], int(bool(result.get("from_cache"))), int(bool(result.get("reused_state"))),
              json.dumps(result.get("caught", [])), meter_["prompt"], meter_["completion"], saved, result["answer"],
              json.dumps(memory.commitments_of(result.get("standalone") or question, result)), source,
              _outcome(result), "self", router.dumps(r) if r else None,
              json.dumps(result.get("stopped")) if result.get("stopped") else None, degraded,
-             "frozen" if config.ROUTER_FROZEN else None, _reuse_kind(result), time.time()),
+             "frozen" if config.ROUTER_FROZEN else None, _reuse_kind(result),
+             json.dumps(meter_.get("compression")) if meter_.get("compression") else None, time.time()),
         )
         today = time.strftime("%Y-%m-%d")
         conn.execute("INSERT INTO usage_daily(day, tokens) VALUES (?, ?) ON CONFLICT(day) DO UPDATE SET "
@@ -306,7 +307,8 @@ def run(store, question: str, mode: str = "auto", typing_delay: float = 0.015, c
         "router": {"scores": r["scores"], "learned": r["learned"], "evidence": r["evidence"],
                    "frozen": r.get("frozen", False)} if r else None,
         "compression": {"mode": _reuse_kind(result),
-                        "prompt_trim": config.COMPRESSION and not flags.get("no_compression")},
+                        "prompt_trim": config.COMPRESSION and not flags.get("no_compression"),
+                        "context": meter_.get("compression", {})},
         "premises": result.get("premises") or [],
         "path": result["path"],
     }

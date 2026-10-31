@@ -57,7 +57,11 @@ export type Final = {
   verified_only?: boolean
   tokens: { prompt: number; completion: number; total: number; calls: number; saved: number; graph_calls?: number }
   router: { scores: Record<string, number>; learned: boolean; evidence: number; frozen?: boolean } | null
-  compression?: { mode: 'exact_repeat' | 'state_answer' | 'template' | 'similar_state' | null; prompt_trim: boolean }
+  compression?: {
+    mode: 'exact_repeat' | 'state_answer' | 'template' | 'similar_state' | null
+    prompt_trim: boolean
+    context?: { facts_kept?: number; facts_cut?: number; redrafted?: boolean; redraft_reason?: string; history_expanded?: boolean }
+  }
   premises?: PathItem[]
   path: PathItem[]
 }
@@ -284,6 +288,7 @@ export type Metrics = {
     score: number
   }[]
   by_reuse: { kind: string; turns: number; avg_tokens: number | null; verified_rate: number | null }[]
+  context_check: { trimmed_answers: number; redrafted: number; history_expanded: number; facts_cut: number; facts_kept: number }
   router_frozen: boolean
   timeline: { n: number; rolling_success: number | null; rolling_tokens: number | null; cached: boolean }[]
   health: { verified_only: boolean; reason: string | null; reject_rate: number; error_rate: number }

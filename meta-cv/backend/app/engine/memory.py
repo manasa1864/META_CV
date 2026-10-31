@@ -36,15 +36,12 @@ def history(conversation_id: str | None, limit: int = HISTORY_TURNS) -> list[dic
     return [{**dict(r), "commitments": json.loads(r["commitments"])} for r in reversed(rows)]
 
 
-def history_text(hist: list[dict]) -> str:
-    """The conversation for prompts. Compressed: the last few turns with short answers - the verified
-    statements themselves travel separately, so long answer prose adds tokens without adding facts."""
-    if compression.enabled():
-        hist = hist[-compression.HISTORY_TURNS:]
-        size = compression.HISTORY_ANSWER_CHARS
-    else:
-        size = 400
-    return "\n".join(f"Q{i}: {t['question']}\nA{i}: {t['answer'][:size]}" for i, t in enumerate(hist, 1))
+def history_text(hist: list[dict], question: str = "") -> str:
+    """The conversation for prompts. Compressed: the last few turns with short answers (the verified statements
+    themselves travel separately), unless the question mentions something only the cut part contains - then
+    the full history is used (compression.compact_history)."""
+    shown, size, _ = compression.compact_history(hist, question)
+    return "\n".join(f"Q{i}: {t['question']}\nA{i}: {t['answer'][:size]}" for i, t in enumerate(shown, 1))
 
 
 def commitments_of(question: str, result: dict) -> list[dict]:
@@ -88,7 +85,7 @@ def answer(store, question: str, hist: list[dict], trace: Trace):
     yield ev
     commits = [c for t in hist for c in t["commitments"]]
     numbered = "\n".join(f"{i}. {_fmt(c)}" for i, c in enumerate(commits, 1)) or "(none)"
-    d = llm.chat_json(CONSISTENCY_SYSTEM, f"Conversation so far:\n{history_text(hist)}\n\n"
+    d = llm.chat_json(CONSISTENCY_SYSTEM, f"Conversation so far:\n{history_text(hist, question)}\n\n"
                                           f"Verified statements:\n{numbered}\n\nFollow-up: {question}")
     d = d if isinstance(d, dict) else {}
     used = []

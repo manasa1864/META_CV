@@ -95,6 +95,8 @@ export default function MetricsView() {
         <Tile label="Similar-answer reuse" value={num(t.reused_states)} sub="answers adapted a verified state" />
         <Tile label="Stopped instead of guessing" value={num(t.stopped)}
           sub={Object.entries(m.stops).map(([k, v]) => `${k.replaceAll('_', ' ')} ${v}`).join(', ') || 'no stops yet'} />
+        <Tile label="Trimming check" value={`${num(m.context_check?.redrafted)} undone`}
+          sub={`of ${num(m.context_check?.trimmed_answers)} trimmed answers · ${num(m.context_check?.history_expanded)} used full history`} />
         <Tile label="Graph health" value={gh ? `${gh.counts.error ?? 0} errors` : 'not audited'}
           sub={gh ? `${gh.counts.warning ?? 0} warnings · audited ${new Date(gh.ran_at * 1000).toLocaleTimeString()}` : 'see /audit/summary'} />
       </div>

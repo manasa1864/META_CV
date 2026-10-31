@@ -293,14 +293,37 @@ def walk(store, question: str, entities: list[str], trace: Trace, prior: dict | 
                          + (" and " if prior and earlier else "") + ("earlier in this conversation" if earlier else "")
                          + " - already-verified nodes skip their checks.", "ok")
 
+    all_relations = store.relation_names()
+    trim = compression.enabled()
+    if trim:
+        shown, cut = compression.split_facts(known, question, entities, must_keep=earlier)
+        relations, cut_relations = compression.split_relations(all_relations, shown, question)
+        compression.record(facts_kept=len(shown), facts_cut=len(cut), relations_kept=len(relations),
+                           relations_cut=len(cut_relations))
+    else:
+        shown, cut, relations, cut_relations = known[:80], [], all_relations, []
+
+    checked, found = yield from _draft_and_check(store, question, shown, relations, earlier, trace, verified_only)
+    lost = compression.context_lost(checked, cut, cut_relations) if trim else None
+    if lost:
+        yield trace.note("compression", "Context check: trimming may have hidden something",
+                         f"{lost}. Redrafting with every known fact and relation.", "warn")
+        compression.record(redrafted=True, redraft_reason=lost)
+        checked, found = yield from _draft_and_check(store, question, known[:80], all_relations, earlier, trace,
+                                                     verified_only)
+    elif trim and (cut or cut_relations):
+        yield trace.note("compression", "Context check passed",
+                         f"{len(shown)} of {len(known)} known facts and {len(relations)} of {len(all_relations)} relation "
+                         "names were shown; every claim that relies on the cut ones was verified against the full graph.",
+                         "ok")
+    return checked, found
+
+
+def _draft_and_check(store, question: str, shown: list[dict], relations: list[str], earlier: list[dict],
+                     trace: Trace, verified_only: bool):
+    """Generator: draft the claim path from the shown context and verify it node by node against the full graph."""
     ev = trace.start("factual", "Drafting the answer as a path of claims")
     yield ev
-    relations = store.relation_names()
-    if compression.enabled():
-        shown = compression.rank_facts(known, question, entities)
-        relations = compression.relevant_relations(relations, shown, question)
-    else:
-        shown = known[:80]
     known_txt = "\n".join(f"- {f['subject']} | {f['relation']} | {f['object']}" for f in shown) or "(none)"
     claims = _parse_claims(llm.chat_json(
         DRAFT_SYSTEM, f"KNOWN FACTS:\n{known_txt}\n\nRelations in use: {relations}\n\nQuestion: {question}"
