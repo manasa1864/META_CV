@@ -1,0 +1,10 @@
+{
+ "description": "TODO for the project owner: real-world long-tail questions with verified answers. Nothing here is filled in on purpose - answers must come from a source you checked, not from a model. For each item fill expected (keywords that must appear, or a number), forbidden (plausible wrong answers), source (URL or citation) and set ready to true. Items with ready=false are skipped by the benchmark. Prefer questions a model is likely to get wrong: lesser-known people, exact dates, counts, recent changes.",
+ "items": [
+  {"id": "real-001", "kind": "real_world", "ready": false, "source": "", "turns": [{"question": "", "type": "factual", "risks": ["factual.entity_error"], "expected": [], "forbidden": []}]},
+  {"id": "real-002", "kind": "real_world", "ready": false, "source": "", "turns": [{"question": "", "type": "factual", "risks": ["factual.entity_error"], "expected": [], "forbidden": []}]},
+  {"id": "real-003", "kind": "real_world", "ready": false, "source": "", "turns": [{"question": "", "type": "factual", "risks": ["factual.relation_error"], "expected": [], "forbidden": []}]},
+  {"id": "real-004", "kind": "real_world", "ready": false, "source": "", "turns": [{"question": "", "type": "factual", "risks": ["temporal.stale"], "expected": [], "forbidden": []}]},
+  {"id": "real-005", "kind": "real_world", "ready": false, "source": "", "turns": [{"question": "", "type": "reasoning", "risks": ["faithful.premise", "faithful.logic"], "expected": 0, "forbidden": []}]}
+ ]
+}

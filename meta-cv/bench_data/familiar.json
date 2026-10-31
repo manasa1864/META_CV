@@ -1,0 +1,965 @@
+{
+ "description": "Familiar-facts control group: the original 56 questions. Most factual answers are in the seed graph (python -m app.seed) and are famous facts a strong model already knows, so they mainly measure lookup, not resistance to hallucination. Report separately.",
+ "items": [
+  {
+   "id": "fam-001",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "Who wrote Pride and Prejudice?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "austen"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-002",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "When was Pride and Prejudice published?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "1813"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-003",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "Who wrote 1984 and when was it published?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "orwell",
+      "1949"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-004",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "Who does Elizabeth Bennet marry in Pride and Prejudice?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "darcy"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-005",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "Who does Atticus Finch defend in To Kill a Mockingbird?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "tom robinson"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-006",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "In what year did Albert Einstein win the Nobel Prize?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "1921"
+     ],
+     "forbidden": [
+      "1905"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "fam-007",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "Where was Albert Einstein born?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "ulm"
+     ],
+     "forbidden": [
+      "munich"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "fam-008",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "Which elements did Marie Curie discover?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "polonium",
+      "radium"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-009",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "When was Harry Potter and the Philosopher's Stone published?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "1997"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-010",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "Where was J. K. Rowling born?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "yate"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-011",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "Where was George Orwell born?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "motihari"
+     ],
+     "forbidden": [
+      "london"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "fam-012",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "What is the capital of Australia?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "canberra"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-013",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "Who painted the Mona Lisa?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "leonardo"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-014",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "Which planet is closest to the Sun?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "mercury"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-015",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "Who developed the theory of relativity?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "einstein"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-016",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "Which laws did Isaac Newton formulate?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "motion"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-017",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "On which continent is Warsaw?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "europe"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-018",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "What genre is the novel 1984?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "dystopian"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-019",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "Who wrote To Kill a Mockingbird and when was it published?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "harper lee",
+      "1960"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-020",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "Which characters appear in Harry Potter and the Philosopher's Stone?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "hermione",
+      "ron"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-021",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "A shop has 12 boxes with 7 apples each. 4 apples are eaten. How many apples are left?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 80,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-022",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "A shop has 15 boxes with 6 oranges each. 9 oranges are sold. How many oranges are left?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 81,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-023",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "What is 17 * 23?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 391,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-024",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "A train travels at 80 km/h for 2.5 hours. How far does it go, in km?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 200,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-025",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "A car travels at 60 km/h for 3.5 hours. How far does it go, in km?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 210,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-026",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "A shirt costs $40 and is discounted by 25%. What is the sale price in dollars?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 30,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-027",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "A jacket costs $120 and is discounted by 15%. What is the sale price in dollars?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 102,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-028",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "What is the average of 4, 8, 15 and 23?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 12.5,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-029",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "A rectangle is 9 m long and 4 m wide. What is its area in square metres?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 36,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-030",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "A rectangle is 12 m long and 5 m wide. What is its perimeter in metres?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 34,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-031",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "Sam is 3 times as old as Kim. In 10 years Sam will be twice as old as Kim. How old is Kim now?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 10,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-032",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "What is 15% of 260?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 39,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-033",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "5 workers build a wall in 12 days. How many days do 3 workers take at the same rate?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 20,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-034",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "A recipe needs 3 eggs for 4 people. How many eggs are needed for 12 people?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 9,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-035",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "What is the sum of the integers from 1 to 100?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 5050,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-036",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "A bat and a ball cost $1.10 in total. The bat costs $1.00 more than the ball. How much does the ball cost, in cents?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 5,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-037",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "How many minutes are there in 3.5 hours?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 210,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-038",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "A tank holds 500 litres and drains at 20 litres per minute. How many minutes until it is empty?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 25,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-039",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "Where was Jane Austen born?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "steventon"
+     ],
+     "forbidden": [
+      "bath"
+     ]
+    },
+    {
+     "question": "Which of her books was published in 1813?",
+     "type": "consistency",
+     "risks": [
+      "faithful.context"
+     ],
+     "expected": [
+      "pride and prejudice"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-040",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "A shop has 12 boxes with 7 apples each and 4 are eaten. How many apples are left?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 80,
+     "forbidden": []
+    },
+    {
+     "question": "If they then sell half of what is left, how many apples remain?",
+     "type": "consistency",
+     "risks": [
+      "faithful.context",
+      "faithful.logic"
+     ],
+     "expected": 40,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-041",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "Who wrote 1984?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "orwell"
+     ],
+     "forbidden": []
+    },
+    {
+     "question": "Where was he born?",
+     "type": "consistency",
+     "risks": [
+      "faithful.context"
+     ],
+     "expected": [
+      "motihari"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-042",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "What is 17 * 23?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 391,
+     "forbidden": []
+    },
+    {
+     "question": "Now add 9 to that result. What do you get?",
+     "type": "consistency",
+     "risks": [
+      "faithful.context",
+      "faithful.logic"
+     ],
+     "expected": 400,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-043",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "Who does Elizabeth Bennet marry?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "darcy"
+     ],
+     "forbidden": []
+    },
+    {
+     "question": "Which novel are they characters in?",
+     "type": "consistency",
+     "risks": [
+      "faithful.context"
+     ],
+     "expected": [
+      "pride and prejudice"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-044",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "Where was Marie Curie born?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "warsaw"
+     ],
+     "forbidden": []
+    },
+    {
+     "question": "Which country is that city in?",
+     "type": "consistency",
+     "risks": [
+      "faithful.context"
+     ],
+     "expected": [
+      "poland"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-045",
+   "kind": "familiar",
+   "graph_contains_answer": false,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "A train travels at 80 km/h for 2.5 hours. How far does it go, in km?",
+     "type": "reasoning",
+     "risks": [
+      "faithful.logic"
+     ],
+     "expected": 200,
+     "forbidden": []
+    },
+    {
+     "question": "How many hours would the same trip take at 100 km/h?",
+     "type": "consistency",
+     "risks": [
+      "faithful.context",
+      "faithful.logic"
+     ],
+     "expected": 2,
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-046",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "Who wrote To Kill a Mockingbird?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "harper lee"
+     ],
+     "forbidden": []
+    },
+    {
+     "question": "Remind me, who did you say wrote it?",
+     "type": "consistency",
+     "risks": [
+      "faithful.context"
+     ],
+     "expected": [
+      "harper lee"
+     ],
+     "forbidden": []
+    }
+   ]
+  },
+  {
+   "id": "fam-047",
+   "kind": "familiar",
+   "graph_contains_answer": true,
+   "source": "seed graph (app/seed.py) or arithmetic",
+   "turns": [
+    {
+     "question": "In what year did Albert Einstein win the Nobel Prize?",
+     "type": "factual",
+     "risks": [
+      "factual.entity_error"
+     ],
+     "expected": [
+      "1921"
+     ],
+     "forbidden": [
+      "1905"
+     ]
+    },
+    {
+     "question": "How many years after his Nobel Prize was 1950?",
+     "type": "consistency",
+     "risks": [
+      "faithful.context",
+      "faithful.logic"
+     ],
+     "expected": 29,
+     "forbidden": []
+    }
+   ]
+  }
+ ]
+}
