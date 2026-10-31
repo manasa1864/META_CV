@@ -9,6 +9,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 os.environ["GRAPH_BACKEND"] = "sqlite"
+os.environ["WIKIDATA_LOOKUP"] = "0"  # scripted and offline
 os.environ["DB_PATH"] = str(HERE / "demo.db")
 os.environ["SCRIPTED_DEMO"] = "1"
 os.environ["META_NO_HOME_ENV"] = "1"

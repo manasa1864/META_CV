@@ -38,19 +38,29 @@ def configured() -> bool:
     return bool(config.META_API_KEY and config.META_BASE_URL and config.META_MODEL)
 
 
-_client_obj: OpenAI | None = None
+_clients: dict[str, OpenAI] = {}
 _client_lock = threading.Lock()
 
 
-def _client() -> OpenAI:
-    global _client_obj
+def judge_configured() -> bool:
+    """A separate model does the independent checks (META_JUDGE_MODEL)."""
+    return bool(config.META_JUDGE_MODEL)
+
+
+def judge_model() -> str:
+    return config.META_JUDGE_MODEL or config.META_MODEL
+
+
+def _client(judge: bool = False) -> OpenAI:
     if not configured():
         raise LLMNotConfigured("The language model is not configured (META_API_KEY, META_BASE_URL, META_MODEL)")
+    use_judge = judge and judge_configured()
+    key = (config.META_JUDGE_API_KEY or config.META_API_KEY) if use_judge else config.META_API_KEY
+    url = (config.META_JUDGE_BASE_URL or config.META_BASE_URL) if use_judge else config.META_BASE_URL
     with _client_lock:
-        if _client_obj is None:
-            _client_obj = OpenAI(api_key=config.META_API_KEY, base_url=config.META_BASE_URL,
-                                 timeout=config.LLM_TIMEOUT, max_retries=0)
-        return _client_obj
+        if (url, key) not in _clients:
+            _clients[(url, key)] = OpenAI(api_key=key, base_url=url, timeout=config.LLM_TIMEOUT, max_retries=0)
+        return _clients[(url, key)]
 
 
 class Breaker:
@@ -81,14 +91,14 @@ def status() -> dict:
     return {"configured": configured(), "breaker_open": breaker.is_open()}
 
 
-def _complete(system: str, user: str, temperature: float):
+def _complete(system: str, user: str, temperature: float, judge: bool = False):
     if breaker.is_open():
         raise LLMUnavailable("the language model is temporarily unavailable")
     last = None
     for attempt in range(max(1, config.LLM_RETRIES)):
         try:
-            resp = _client().chat.completions.create(
-                model=config.META_MODEL, temperature=temperature,
+            resp = _client(judge).chat.completions.create(
+                model=judge_model() if judge else config.META_MODEL, temperature=temperature,
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             )
             breaker.success()
@@ -115,9 +125,9 @@ def _parse_json(text: str):
         raise LLMBadOutput(f"model returned invalid JSON: {e}") from e
 
 
-def chat_text(system: str, user: str, temperature: float = 0) -> str:
+def chat_text(system: str, user: str, temperature: float = 0, judge: bool = False) -> str:
     before_llm_call()
-    resp = _complete(system, user, temperature)
+    resp = _complete(system, user, temperature, judge)
     text = resp.choices[0].message.content or ""
     u = getattr(resp, "usage", None)
     if u is not None and u.prompt_tokens is not None:
@@ -129,6 +139,14 @@ def chat_text(system: str, user: str, temperature: float = 0) -> str:
 
 def chat_json(system: str, user: str, temperature: float = 0):
     return _parse_json(chat_text(system, user, temperature))
+
+
+def judge_json(system: str, user: str, temperature: float = 0):
+    """The independent checks (judge and blind probe). With META_JUDGE_MODEL set they go to that model, so
+    the drafter is not checking itself; without it they go to the main model, as before."""
+    if not judge_configured():
+        return chat_json(system, user, temperature)
+    return _parse_json(chat_text(system, user, temperature, judge=True))
 
 
 def normalize_relation(name: str) -> str | None:

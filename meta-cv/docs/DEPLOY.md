@@ -24,6 +24,8 @@ container sets `META_NO_HOME_ENV=1` so nothing reads `~/.meta_cv/.env`.
 | `ADMIN_TOKEN` | long random string; write endpoints need header `X-Admin-Token` |
 | `DB_PATH` | path on a persistent volume if the host has one (default `/data/meta.db`) |
 | `PORT` | the port the host expects (Hugging Face Spaces: `7860`) |
+| `META_JUDGE_MODEL` | optional: a different model for the independent checks, so the drafter does not check itself (`META_JUDGE_BASE_URL` / `META_JUDGE_API_KEY` if it is on another API) |
+| `WIKIDATA_LOOKUP` | optional: `0` turns off the Wikidata evidence lookup (on by default; needs outbound HTTPS to wikidata.org) |
 | `CHECK_WORKERS` | optional: model checks run at the same time (default `6`); lower it if the model API rate-limits, `1` checks one by one |
 | optional | `RATE_LIMIT_PER_MIN` (12), `DAILY_TOKEN_BUDGET` (2000000), `MAX_CONCURRENT` (8), `LLM_TIMEOUT` (30) |
 

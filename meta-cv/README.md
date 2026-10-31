@@ -97,6 +97,39 @@ The system answers "I can't answer this reliably" (and says why) when:
 
 A global breaker switches to **verified-only mode** when recent answers are mostly rejections, or when the model or graph keep failing. In that mode only graph facts count, and a banner says so.
 
+### Independent checks: outside evidence and a separate judge
+
+Outside the graph, a claim used to be accepted only by the same model that drafted it: a judge, plus a blind
+probe. That model's mistakes repeat across all three calls. Two things now break that loop.
+
+**Wikidata evidence** (`engine/wikidata.py`). This applies to relations Wikidata records: birth and death
+place and year, author, publication date, characters, location, spouse, parents, awards, genre, CEO and others.
+1. The subject's item is found by exact name. The mapped property is read, and its values are compared exactly
+   with the claim (label or alias, or the year of a date).
+2. **The result:**
+   - **A match** accepts the claim (source `wikidata`, with the item's QID). It counts as evidence like a graph
+     fact, so confidence can be "high".
+   - **A mismatch on a single-valued fact** (birth or death place or date) corrects the claim to the value
+     Wikidata holds (`wikidata-corrected`). If Wikidata holds several values, the claim is dropped.
+   - **Anything else is "unknown":** no exact item, no value, a relation that is not mapped, or Wikidata being
+     unreachable. Then the model checks decide, as before. It never raises.
+3. **Graph writes:** facts confirmed by Wikidata go to the review queue. A human still decides what enters
+   the graph.
+4. **Speed:** the lookup runs at the same time as the judge and probe. When it decides, those calls are cancelled.
+
+**A separate judge model.** Set `META_JUDGE_MODEL`, plus `META_JUDGE_BASE_URL` / `META_JUDGE_API_KEY` if it
+lives on another API. The judge and blind probe then run on that model. The trace says which model judged,
+and whether it is the drafter.
+
+**Measured live** (12 claims about the seed's people and books):
+- **True claims:** all eight confirmed.
+- **Wrong single-valued claims:** "born in Bath", "birth year 1897" and "born in New York" are each
+  contradicted with the true value.
+- **No loose matches:** "located in York" does not pass for Warsaw.
+- **Speed:** about 2 s for a new subject, 0.4 s cached. Tests use a mocked Wikidata, never the network.
+
+**Privacy:** only the claim's names and the property go to wikidata.org. `WIKIDATA_LOOKUP=0` turns it off.
+
 ### Faster checking
 
 A claim the graph does not hold costs two model calls: the independent judgment and the blind probe.

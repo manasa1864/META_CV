@@ -11,8 +11,12 @@ accepted nodes:
      types     - not in the graph, and its subject or object is the wrong kind of thing for the
                  relation (entity_types.py): dropped at once, with no model call
   2. cache     - it was model-verified recently (claims expire after CLAIM_TTL_HOURS)
-  3. model     - not in the graph: an independent true/false judgment AND a blind
-                 probe (asked without seeing the claimed object) must agree.
+  3. evidence  - not in the graph: Wikidata (wikidata.py) is asked for relations it records.
+                 A match accepts the claim; a clear contradiction of a single-valued fact
+                 corrects it (or drops it when Wikidata holds several values).
+  4. model     - otherwise an independent true/false judgment AND a blind probe (asked
+                 without seeing the claimed object) must agree. They run on META_JUDGE_MODEL
+                 when it is set, so the drafter is not checking its own claims.
                  Skipped in verified-only mode: then only the graph counts.
 An accepted node must also not clash with an earlier node of the answer or with what
 the conversation already established: same subject and a single-valued relation with a
@@ -35,7 +39,8 @@ import time
 from .. import config, llm, state_cache
 from ..db import connect
 from ..graph_common import EXCLUSIVE_RELATIONS
-from . import compression, decompose, entity_types, guardrails, parallel, temporal
+from . import compression, decompose, entity_types, guardrails, parallel, temporal, wikidata
+from .entities import normalize
 from .router import caught
 from .trace import Trace
 
@@ -105,8 +110,11 @@ def claim_key(c: dict) -> str:
     return state_cache.make_key(f"claim:{triple(c)}")
 
 
-def _queue_for_review(c: dict) -> None:
-    """Model-verified facts are never written to the graph directly; a human accepts them via /review."""
+EVIDENCE_SOURCES = ("graph", "graph-corrected", "wikidata", "wikidata-corrected")
+
+
+def _queue_for_review(c: dict, reason: str = "model-verified, not in graph") -> None:
+    """Facts verified outside the graph are never written to it directly; a human accepts them via /review."""
     with connect() as conn:
         exists = conn.execute(
             "SELECT 1 FROM review_queue WHERE subject=? AND relation=? AND object=? AND status='pending'",
@@ -115,7 +123,7 @@ def _queue_for_review(c: dict) -> None:
         if not exists:
             conn.execute(
                 "INSERT INTO review_queue(subject, relation, object, source, reason, created_at) VALUES (?,?,?,?,?,?)",
-                (c["subject"], c["relation"], c["object"], "chat", "model-verified, not in graph", time.time()),
+                (c["subject"], c["relation"], c["object"], "chat", reason, time.time()),
             )
 
 
@@ -149,7 +157,8 @@ def still_holds(store, claims: list[dict]) -> str | None:
         if c.get("source") in ("graph", "graph-corrected"):
             if store.validate(c["subject"], c["relation"], c["object"])["verdict"] != "supported":
                 return f"graph no longer supports {c['subject']} {c['relation']} {c['object']}"
-        elif c.get("source") in ("model", "cache") and state_cache.get(claim_key(c)) is None:
+        elif c.get("source") in ("model", "cache", "wikidata", "wikidata-corrected") \
+                and state_cache.get(claim_key(c)) is None:
             return f"verification of {c['subject']} {c['relation']} {c['object']} expired"
     return None
 
@@ -204,9 +213,13 @@ def _stored_values(store, subject: str, relation: str) -> list[str]:
 
 
 def start_model_check(c: dict) -> tuple:
-    """Start the independent judgment and the blind probe at the same time (they do not see each other)."""
-    return (parallel.submit(llm.chat_json, JUDGE_SYSTEM, f"Claim: {c['subject']} {c['relation'].replace('_', ' ')} {c['object']}"),
-            parallel.submit(llm.chat_json, PROBE_SYSTEM, f"subject: {c['subject']}\nrelation: {c['relation']}\nobject: ?"))
+    """Start the Wikidata lookup, the independent judgment and the blind probe at the same time (none sees
+    another's answer). Returns (judge, probe, evidence or None) futures."""
+    evidence = parallel.submit(wikidata.check, c["subject"], c["relation"], c["object"]) \
+        if wikidata.enabled() and wikidata.covers(c["relation"]) else None
+    return (parallel.submit(llm.judge_json, JUDGE_SYSTEM, f"Claim: {c['subject']} {c['relation'].replace('_', ' ')} {c['object']}"),
+            parallel.submit(llm.judge_json, PROBE_SYSTEM, f"subject: {c['subject']}\nrelation: {c['relation']}\nobject: ?"),
+            evidence)
 
 
 def _needs_model_check(store, c: dict) -> bool:
@@ -223,7 +236,7 @@ def _needs_model_check(store, c: dict) -> bool:
 
 
 def _model_check(c: dict, started: tuple | None = None) -> dict:
-    judge_f, probe_f = started or start_model_check(c)
+    judge_f, probe_f, _ = started or start_model_check(c)
     judge = judge_f.result()
     verdict = str(judge.get("verdict", "unsure")).lower() if isinstance(judge, dict) else "unsure"
     try:
@@ -277,19 +290,45 @@ def verify_node(store, c: dict, trace: Trace, label: str, verified_only: bool = 
         yield trace.settle(ev, "ok", "Not in the graph, but this exact node was verified recently (cache). Moving on.")
         return {**c, "status": "accepted", "source": "cache", "reason": "previously model-verified"}
 
-    yield trace.settle(ev, "running", "Not in the graph. Independent check and blind probe "
-                       + ("(already running alongside the other nodes)..." if started else "(run together)..."))
-    m = _model_check(c, started)
+    run = started or start_model_check(c)
+    yield trace.settle(ev, "running", "Not in the graph. " + ("Wikidata lookup, independent" if run[2] else "Independent")
+                       + " check and blind probe " + ("(already running alongside the other nodes)..." if started
+                                                       else "(run together)..."))
+    evidence = run[2].result() if run[2] else None
+    if evidence and evidence["verdict"] == "supported":
+        for f in run[:2]:
+            f.cancel()
+        state_cache.put(claim_key(c), {"status": "accepted", "checked_at": time.time()},
+                        ttl=config.CLAIM_TTL_HOURS * 3600, triples=[triple(c)])
+        _queue_for_review(c, f"confirmed by Wikidata {evidence['qid']}, not in graph")
+        yield trace.settle(ev, "ok", f"Not in the graph; outside evidence confirms it: {evidence['reason']}. "
+                                     "Accepted and queued for graph review.")
+        return {**c, "status": "accepted", "source": "wikidata", "reason": evidence["reason"], "qid": evidence["qid"]}
+    if evidence and evidence["verdict"] == "contradicted":
+        for f in run[:2]:
+            f.cancel()
+        if len(evidence["values"]) == 1:
+            fixed = {**c, "object": normalize(evidence["values"][0])}
+            yield trace.settle(ev, "warn", f"Outside evidence contradicts it: {evidence['reason']}. Corrected to {_fmt(fixed)}.")
+            return {**fixed, "status": "accepted", "source": "wikidata-corrected", "reason": evidence["reason"],
+                    "original_object": c["object"], "qid": evidence["qid"]}
+        yield trace.settle(ev, "fail", f"Outside evidence contradicts it: {evidence['reason']}. Dropped.")
+        return {**c, "status": "rejected", "source": "wikidata", "reason": evidence["reason"], "qid": evidence["qid"]}
+
+    m = _model_check(c, run)
+    judge = f"judge {llm.judge_model()}, " + ("a different model from the drafter" if llm.judge_configured()
+                                               else "the same model that drafted it")
     probe = ", ".join(m["probe_answers"]) or "no answer"
     if m["verdict"] == "false" and m["confidence"] >= 0.5:
-        yield trace.settle(ev, "fail", f"Independent check says false ({m['confidence']:.2f}). Dropped.")
+        yield trace.settle(ev, "fail", f"Independent check ({judge}) says false ({m['confidence']:.2f}). Dropped.")
         return {**c, "status": "rejected", "source": "model", "reason": "independent check: false"}
     if m["verdict"] == "true" and m["confidence"] >= 0.7 and m["probe_matched"]:
-        accepted = {**c, "status": "accepted", "source": "model", "reason": "independent check and blind probe agree"}
+        accepted = {**c, "status": "accepted", "source": "model",
+                    "reason": f"independent check and blind probe agree ({judge})"}
         state_cache.put(claim_key(c), {"status": "accepted", "checked_at": time.time()},
                         ttl=config.CLAIM_TTL_HOURS * 3600, triples=[triple(c)])
         _queue_for_review(c)
-        yield trace.settle(ev, "ok", f"Not in graph; check says true ({m['confidence']:.2f}) and blind probe "
+        yield trace.settle(ev, "ok", f"Not in graph; check ({judge}) says true ({m['confidence']:.2f}) and blind probe "
                                      f"independently gave '{probe}'. Accepted and queued for graph review.")
         return accepted
     yield trace.settle(ev, "warn", f"Could not confirm (check: {m['verdict']} {m['confidence']:.2f}; blind probe: "
@@ -300,10 +339,10 @@ def verify_node(store, c: dict, trace: Trace, label: str, verified_only: bool = 
 def _caught_by_checks(checked: list[dict]) -> list[dict]:
     out = []
     for c in checked:
-        if c["source"] == "graph-corrected":
+        if c["source"] in ("graph-corrected", "wikidata-corrected"):
             out.append(caught("factual.entity_error", "factual", "corrected",
                               f"{c['subject']} {c['relation']} {c['original_object']} -> {c['object']} ({c['reason']})"))
-        elif c["status"] == "rejected" and c["source"] in ("graph", "model"):
+        elif c["status"] == "rejected" and c["source"] in ("graph", "model", "wikidata"):
             out.append(caught("factual.entity_error", "factual", "dropped", f"{_fmt(c)}: {c['reason']}"))
         elif c["status"] == "rejected" and c["source"] == "types":
             out.append(caught("factual.relation_error", "factual", "dropped", f"{_fmt(c)}: {c['reason']}"))
@@ -434,7 +473,7 @@ def _draft_and_check(store, question: str, shown: list[dict], relations: list[st
     try:
         checked, found = yield from _walk_claims(store, claims, by_triple, earlier, trace, verified_only, answered, started)
     finally:
-        for f in (f for pair in started.values() for f in pair):
+        for f in (f for run in started.values() for f in run if f is not None):
             f.cancel()  # only matters if the walk stopped early (budget, error): don't leave work queued
     return checked, _caught_by_checks(checked) + found
 
@@ -502,7 +541,7 @@ def answer_from_state(store, question: str, prior: dict, trace: Trace):
         return None
     yield trace.settle(ev, "ok", f"Answered from {len(used)} fact(s) verified for the similar question and re-checked "
                                  "against the graph - no new claim chain needed.")
-    graph_share = sum(c.get("source") in ("graph", "graph-corrected") for c in accepted) / len(accepted)
+    graph_share = sum(c.get("source") in EVIDENCE_SOURCES for c in accepted) / len(accepted)
     return {"tier": "factual", "answer": text, "confidence": "high" if graph_share >= 0.5 else "medium",
             "path": accepted, "caught": [], "withheld": 0, "cacheable": False, "stopped": None,
             "compressed": "state_answer"}
@@ -546,7 +585,7 @@ def answer(store, question: str, entities: list[str], trace: Trace, prior: dict 
         text = "I couldn't verify any facts to answer this, so I'd rather not guess."
         yield trace.settle(ev, "warn", "Nothing verified - declining to answer")
 
-    graph_share = sum(c["source"] in ("graph", "graph-corrected") for c in accepted) / max(len(accepted), 1)
+    graph_share = sum(c["source"] in EVIDENCE_SOURCES for c in accepted) / max(len(accepted), 1)
     confidence = "high" if accepted and not missing and graph_share >= 0.5 else "medium" if accepted else "low"
     if confidence == "high" and any(c.get("stale") for c in accepted):
         confidence = "medium"  # true as of an older check, or only as far as the model knows

@@ -5,6 +5,36 @@ Numbers here are measured. Anything that needs the real model, or a real AuraDB 
 
 ## 2026-11-01
 
+### Independent checks: Wikidata evidence and a separate judge model
+- **The gap:** a claim the graph did not hold was judged only by the model that drafted it, so its mistakes
+  repeated across the draft, the judge and the probe.
+- **Wikidata evidence** (`engine/wikidata.py`), for about 20 mapped relations:
+  - an exact label, alias or year match accepts the claim (source `wikidata`, with the QID);
+  - a mismatch on a single-valued fact corrects it to Wikidata's value, or drops it when there are several;
+  - anything else, including Wikidata being down, leaves the decision to the model checks;
+  - it runs alongside the judge and probe, which are cancelled when it decides;
+  - confirmed facts go to the review queue, never straight into the graph;
+  - `WIKIDATA_LOOKUP=0` turns it off.
+- **Separate judge model:** `META_JUDGE_MODEL` (optional own base URL and key) runs the judge and blind
+  probe. The trace says which model judged and whether it is the drafter.
+- **Measured live:**
+  - the eight true claims about the seed's people and books are confirmed;
+  - "born in Bath", "birth year 1897" and "born in New York" are contradicted with the true value;
+  - "located in York" does not pass for Warsaw;
+  - about 2 s per new subject, 0.4 s cached.
+- **Found and fixed while testing live:**
+  - contradictions never fired, because several items share a name;
+  - substring matching let "Congress Poland" stand in for "Poland";
+  - names were fetched one request per value.
+- **Tested** (`tests/test_evidence.py`, 6 tests, mocked Wikidata):
+  - match, contradiction and silence;
+  - Wikidata being down;
+  - accepting what the model could not confirm;
+  - correcting what the model got wrong;
+  - unmapped relations falling back to the model checks;
+  - judge-model routing.
+- **Not measured yet:** how often Wikidata decides on real questions, and the token savings when it does.
+
 ### Faster checking
 - **The gap:** every claim the graph did not hold waited for two model calls, one after the other: the judge
   and the blind probe. Claims were checked strictly one at a time, even when they did not depend on each other.

@@ -860,6 +860,8 @@ const CLAIM_TAGS: Record<string, [string, string]> = {
   'graph-corrected': ['Corrected', 'sun'],
   model: ['Confirmed', 'sky'],
   cache: ['Cached', 'lav'],
+  wikidata: ['Wikidata', 'mint'],
+  'wikidata-corrected': ['Corrected', 'sun'],
 }
 
 function pathRow(p: PathItem): { title: string; sub: string; tag: string; tone: string } | null {

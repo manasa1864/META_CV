@@ -5,6 +5,7 @@ from pathlib import Path
 
 # Must be set before app.config is imported; load_dotenv does not override these.
 os.environ["GRAPH_BACKEND"] = "sqlite"
+os.environ["WIKIDATA_LOOKUP"] = "0"  # no network in tests; wikidata tests use a mock transport
 os.environ["DB_PATH"] = os.path.join(tempfile.mkdtemp(), "test.db")
 os.environ["RESULTS_DIR"] = os.path.join(tempfile.mkdtemp(), "results")
 os.environ["REPLAYS_DIR"] = os.path.join(tempfile.mkdtemp(), "replays")

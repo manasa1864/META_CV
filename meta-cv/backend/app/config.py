@@ -60,6 +60,14 @@ GRAPH_RECOVER_SECONDS = _num("GRAPH_RECOVER_SECONDS", 60)      # how often a deg
 META_API_KEY = _env("META_API_KEY")
 META_BASE_URL = _env("META_BASE_URL")
 META_MODEL = _env("META_MODEL")
+# Optional second model for the independent checks (judge + blind probe). Unset: the main model checks its
+# own drafts. Base URL and key default to the main ones, so a second model on the same API needs only the name.
+META_JUDGE_MODEL = _env("META_JUDGE_MODEL")
+META_JUDGE_BASE_URL = _env("META_JUDGE_BASE_URL")
+META_JUDGE_API_KEY = _env("META_JUDGE_API_KEY")
+# Outside evidence for claims the graph does not hold (engine/wikidata.py). 0 turns the lookup off.
+WIKIDATA_LOOKUP = _env("WIKIDATA_LOOKUP", default="1") != "0"
+WIKIDATA_TIMEOUT = _num("WIKIDATA_TIMEOUT", 6)
 LLM_TIMEOUT = _num("LLM_TIMEOUT", 30)
 LLM_RETRIES = _int("LLM_RETRIES", 3)
 LLM_BREAKER_FAILURES = _int("LLM_BREAKER_FAILURES", 5)        # consecutive failures that open the breaker
