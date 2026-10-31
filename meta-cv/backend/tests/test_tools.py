@@ -38,7 +38,8 @@ def test_loadtest_has_no_lock_errors(tmp_path, monkeypatch):
 def test_taxonomy_eval_writes_results(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "RESULTS_DIR", tmp_path)
     res = bench_taxonomy.main(["--fallback-only"])
-    assert res["n"] >= 120 and res["by_source"]["fallback"]["n"] == res["n"]
+    assert res["headline_set"] == "taxonomy_holdout2.json" and set(res["sets"]) >= {"taxonomy_cases.json", "taxonomy_holdout.json"}
+    assert res["by_source"]["fallback"]["n"] == res["n"]
     assert json.loads(next(tmp_path.glob("taxonomy-*.json")).read_text())["n"] == res["n"]
 
 

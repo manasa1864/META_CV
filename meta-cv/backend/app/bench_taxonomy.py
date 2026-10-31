@@ -18,8 +18,16 @@ from .engine import router
 TYPES = router.TYPES
 
 
-def load_cases() -> list[dict]:
-    return json.loads((config.BENCH_DATA_DIR / "taxonomy_cases.json").read_text(encoding="utf-8"))["cases"]
+SETS = {  # file -> what its score means
+    "taxonomy_cases.json": "development set (the fallback rules were written against it)",
+    "taxonomy_holdout.json": "held-out set 1 (written before the rules were revised; its misses were then seen)",
+    "taxonomy_holdout2.json": "held-out set 2 (written after the rules were frozen; the honest estimate for new questions)",
+}
+HEADLINE = "taxonomy_holdout2.json"
+
+
+def load_cases(name: str = "taxonomy_cases.json") -> list[dict]:
+    return json.loads((config.BENCH_DATA_DIR / name).read_text(encoding="utf-8"))["cases"]
 
 
 def _history_text(case: dict) -> str:
@@ -78,8 +86,15 @@ def main(argv=None) -> dict:
     ap.add_argument("--fallback-only", action="store_true", help="skip the model; measure the keyword fallback")
     ap.add_argument("--json")
     args = ap.parse_args(argv)
-    res = evaluate(load_cases(), args.fallback_only)
-    print(f"{res['n']} cases, accuracy {res['accuracy']:.0%}  (llm {res['by_source']['llm']}, fallback {res['by_source']['fallback']})\n")
+    sets = {name: evaluate(load_cases(name), args.fallback_only) for name in SETS
+            if (config.BENCH_DATA_DIR / name).exists()}
+    for name, r in sets.items():
+        print(f"{name:26} n={r['n']:3}  accuracy {r['accuracy']:.0%}  - {SETS[name]}")
+    res = dict(sets.get(HEADLINE) or next(iter(sets.values())))
+    res["headline_set"] = HEADLINE if HEADLINE in sets else next(iter(sets))
+    res["sets"] = {name: {"n": r["n"], "accuracy": r["accuracy"], "meaning": SETS[name]} for name, r in sets.items()}
+    print(f"\nheadline ({res['headline_set']}): {res['n']} cases, accuracy {res['accuracy']:.0%}  "
+          f"(llm {res['by_source']['llm']}, fallback {res['by_source']['fallback']})\n")
     print("confusion (rows = label, columns = predicted)")
     print(f"{'':14}" + "".join(f"{t:>13}" for t in TYPES))
     for t in TYPES:

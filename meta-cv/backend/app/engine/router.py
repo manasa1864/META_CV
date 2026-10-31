@@ -73,46 +73,145 @@ List the named entities (people, works, places), resolving pronouns from the con
 Return only JSON: {"risks": [{"label": "factual.entity_error", "weight": 0.8}], "needs": {"facts": true, "calculation": false, "history": false},
 "false_premise_suspected": false, "time_sensitive": false, "entities": ["..."], "why": "short phrase"}"""
 
+# ----------------------------------------------------------------------------- keyword fallback
+# Used only when the model's classification fails. Each cue below is a general class of wording, not a
+# fix for a particular question; bench_data/taxonomy_holdout*.json measure whether that generalises.
+_NUMWORD = (r"(?:two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|"
+            r"seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|"
+            r"million|half|twice|double|triple|quarter|dozen)")
+_N = rf"(?:\$?\d+(?:[.,]\d+)*(?!\d)(?!st|nd|rd|th)|{_NUMWORD})"
+_NUMBER = re.compile(rf"(?<![\w.]){_N}\b", re.I)
 _RANGE = re.compile(r"\b\d{1,4}(?:-|\s*–\s*)\d{1,4}\b")           # 1643-1715, 9–5: ranges, not subtraction
-_BARE_SUM = re.compile(r"^\s*(?:what(?:'s| is)\s+)?[\d\s.+\-−*/×÷^()]+\??\s*$", re.I)
 _DATE = re.compile(r"\b\d{1,4}[/.]\d{1,2}[/.]\d{1,4}\b")
-_OP = re.compile(r"\d\s*(?:\*\*|[+*/^×÷])\s*\d|\d\s+[-−]\s+\d|\d\s*x\s*\d")
-_PROOF = re.compile(r"\b(prove|show that|derive|demonstrate that)\b", re.I)
-_TASK = re.compile(
-    r"\b(calculate|compute|solve|simplify|evaluate)\b"
-    r"|\bhow (long|far|fast) (will|would|does|do|did)\b"
-    r"|\bhow many \w+ (?:are |is )?(?:there |are )?(?:left|remain|in total|altogether)\b"
-    r"|\bhow many \w+ (?:are )?(?:there )?in \d"
-    r"|\bhow many (?:years|days|months|hours|minutes) (?:after|before|between|since|until|from)\b"
-    r"|\bhow old was .+ when\b"
-    r"|\bwhat is the (?:sum|product|difference|total|average|mean|ratio) of\b"
-    r"|\d+(?:\.\d+)?\s*(?:%|percent)\s+of\s+\$?\d",
-    re.I)
-_NUMBER = re.compile(r"(?<![\w.])\$?\d+(?:[.,]\d+)?")
-_UNIT = re.compile(r"\d\s*(?:km/h|mph|m/s|km|miles?|m|cm|metres?|meters?|kg|g|litres?|liters?|hours?|minutes?|"
-                   r"seconds?|days?|weeks?|months?|years?|dollars?|cents?|%|percent|per)\b|\$\s*\d", re.I)
-_FOLLOW_UP = re.compile(r"\b(you said|earlier|before that|previous|again|that result|that answer|remind me)\b"
-                        r"|^(and|so|then|also|what about|how about)\b|\b(he|she|him|her|his|they|them|their|it|that|those)\b", re.I)
+# a word glued to a number is a name, not a quantity: "Boeing 747", "Python 3.12", "COVID-19", "Super Bowl 50"
+_NAMED_NUMBER = re.compile(r"\b(?:[A-Z][A-Za-z]*|[a-z]+[A-Z][A-Za-z]*) ?\d+(?:\.\d+)*\b(?!\s*(?:km|kg|m|cm|mm|%|"
+                           r"percent|years?|hours?|minutes?|days?|litres?|liters?|people|cups?|dollars?))"
+                           r"|\b[A-Za-z]+-\d+\b")
+
+
+def _strip_names(t: str) -> str:
+    """Drop numbers that are part of a name. A capitalised word starting a sentence is not a name."""
+    def repl(m):
+        before = t[max(0, m.start() - 2):m.start()]
+        sentence_start = m.start() == 0 or before.rstrip() in (".", "?", "!") or before.endswith((". ", "? ", "! "))
+        return m.group(0) if sentence_start and "-" not in m.group(0) else " "
+    return _NAMED_NUMBER.sub(repl, t)
+
+
+_BARE_SUM = re.compile(r"^\s*(?:what(?:'s| is)\s+)?[\d\s.,+\-−*/×÷^()x]+\??\s*$", re.I)
+_SYMBOL_OP = re.compile(r"\d\s*(?:\*\*|[+*/^×÷])\s*\d|\d\s+[-−]\s+\d|\d\s*x\s*\d")
+
+_CUES = {
+    # explicit arithmetic between numbers: "45 times 12", "1,200 divided by 16", "18 percent of 450"
+    "arithmetic": rf"{_N}\s+(?:times|multiplied by|divided by|plus|minus|over)\s+{_N}"
+                  rf"|{_N}\s*(?:%|percent)\s+of\s+{_N}",
+    # multiplicative comparisons: "three times as old", "twice as many"
+    "multiplier": rf"\b(?:{_NUMWORD}|\d+)\s+times\s+as\b|\b(?:twice|half|triple)\s+as\b",
+    # instructions to compute: "divide ...", "convert ...", "find the median ...", "double that"
+    "imperative": r"^(?:please\s+|can you\s+|now\s+|then\s+)*(?:calculate|compute|solve|simplify|evaluate|divide|multiply|"
+                  r"add up|subtract|convert|double|halve|triple|work out|find (?:the )?(?:sum|product|difference|median|"
+                  r"mean|average|remainder|area|volume|perimeter|value|total))\b",
+    "verbs": r"\b(?:calculate|compute|solve for|simplify|evaluate)\b"
+             r"|\b(?:divided by|multiplied by|subtracted from)\b"
+             r"|\bwhat(?:'s| is| are)? the (?:sum|product|difference|total|average|mean|ratio|quotient|remainder) of\b",
+    # proofs and derivations
+    "proof": r"\b(?:prove|show that|derive|demonstrate that)\b",
+    # syllogisms and logic puzzles: "if all A are B ..."
+    "logic": r"\b(?:if|suppose|given that)\b[^?]*\b(?:all|no|some|every)\s+\w+\s+(?:are|is)\b",
+    "sequence": r"\bnext (?:number|term|value)\b|\bin the (?:sequence|series|pattern)\b",
+    # durations and differences that must be derived: "how long did X last", "how many years apart"
+    "duration": r"\bhow (?:long|many (?:years|days|months|decades|centuries))\s+(?:did|does|do|was|were|is|has|have)\b"
+                r"[^?]*\b(?:last|reign|rule|serve|live|take|run|exist|go on)\b"
+                r"|\bhow many (?:years|days|months|weeks|hours|minutes|decades|centuries)\b[^?]{0,40}"
+                r"\b(?:apart|after|before|between|since|until|passed|separate|elapsed|ago|later|earlier)\b"
+                r"|\bhow long (?:after|before|between|ago|will|would|until)\b"
+                r"|\bhow old (?:was|were|is|will|would)\b[^?]*\b(?:when|in|at|by|after)\b",
+    # quantity comparisons: "by how many years", "how much taller", "difference in height between"
+    "comparison": r"\bby how (?:many|much)\b"
+                  r"|\bhow much (?:older|younger|taller|shorter|longer|heavier|lighter|bigger|smaller|more|less|"
+                  r"cheaper|faster|slower|further|farther)\b"
+                  r"|\bdifference (?:in|of) (?:height|age|weight|length|size|population|price|cost|speed|time|years|"
+                  r"distance|area)\b",
+    # totals over several things: "combined, how many legs"
+    "total": r"\b(?:combined|in total|altogether|put together|added together)\b[^?]*\b(?:how (?:many|much)|number)\b"
+             r"|\b(?:how (?:many|much)|number)\b[^?]*\b(?:combined|in total|altogether)\b"
+             r"|\btotal number of\b",
+    # derived counts: "how many apples are left", "how many minutes in 3.5 hours"
+    "derived_count": rf"\bhow many \w+ (?:are |is )?(?:there |are )?(?:left|remain|remaining)\b"
+                     rf"|\bhow many \w+ (?:are )?(?:there )?in (?:a |an )?{_N}",
+    # statistics and geometry on given numbers
+    "stat_words": r"\b(?:remainder|median|quotient|square root|squared|cubed|factorial)\b|\b(?:average|mean) of\s+\d",
+    "measure": r"\b(?:area|perimeter|volume|circumference|diagonal|hypotenuse)\b",
+    "probability": r"\b(?:probability|odds|chance)\b",
+    # conditional change of a quantity: "if a phone loses half its value every year"
+    "change": r"\bif\b[^?]*\b(?:loses|gains|grows|doubles|halves|triples|increases|decreases|drops|rises|falls)\b",
+    # word problems: rates and units next to numbers
+    "unit": rf"{_N}\s*(?:km/h|mph|m/s|km|miles?|m|cm|mm|metres?|meters?|kg|g|litres?|liters?|cups?|hours?|minutes?|"
+            rf"seconds?|days?|weeks?|months?|years?|dollars?|cents?|euros?|%|percent)\b|\$\s*\d"
+            r"|\b(?:per|each|every|a|an) (?:minute|hour|day|week|month|year|litre|liter|km|mile|person|item)\b",
+}
+_C = {k: re.compile(v, re.I) for k, v in _CUES.items()}
+_NEEDS_NUMBER = ("stat_words", "measure", "probability", "change")   # only computational when numbers are given
+_PROBABILITY_OBJECTS = re.compile(r"\b(?:dice|die|coins?|cards?|draw|roll|flip|toss)\b", re.I)
+
+_FOLLOW_UP = re.compile(
+    r"^(?:and|so|then|also|now|but|wait|ok|okay|hmm|what about|how about)\b"
+    r"|\b(?:the same|same for|instead|didn't you|did you|you (?:said|say|mentioned|told)|earlier|before|previous|"
+    r"again|remind me|that result|that answer|that one)\b"
+    r"|\b(?:he|she|him|her|his|hers|they|them|their|it|its|that|those|this)\b", re.I)
 _TIME = re.compile(r"\b(current(ly)?|now|today|latest|this year|still|recent(ly)?|as of)\b", re.I)
 _PROPER = re.compile(r"(?<!^)(?<![.?!]\s)\b[A-Z][a-z]+")
 _WH_FACT = re.compile(r"\b(who|where|which|when|what year)\b", re.I)
 
 
-def looks_computational(text: str) -> bool:
-    """Shared by the keyword fallback and the consistency tier. Ranges and dates are not arithmetic;
-    'how many / average / percent' alone are not enough; word problems with rates and units, and
-    proofs, are."""
-    if _BARE_SUM.match(text) and re.search(r"\d\s*[-−+*/×÷^]\s*\d", text):
-        return True
+_LEAD_IN = re.compile(r"^(?:(?:could|can|would|will) you(?: please)?(?: (?:tell|show|help) me(?: with)?| work out| figure out)?"
+                      r"|please|i (?:want|need|would like) to know|tell me|quick question|hey|hi)[\s,:;-]*", re.I)
+
+
+def clean(text: str) -> str:
+    """Collapse whitespace and drop polite lead-ins, so wording around a question does not change its type."""
+    t = " ".join(str(text).split())
+    while True:
+        stripped = _LEAD_IN.sub("", t, count=1)
+        if stripped == t or not stripped:
+            return t
+        t = stripped
+
+
+def _numbers(text: str) -> int:
+    t = _strip_names(_DATE.sub(" ", _RANGE.sub(" ", clean(text))))
+    return len(_NUMBER.findall(t))
+
+
+def computational_cues(text: str) -> list[str]:
+    """Which cue groups fire (for tests and the trace)."""
+    text = clean(text)
     t = _DATE.sub(" ", _RANGE.sub(" ", text))
-    if _PROOF.search(t) or _OP.search(t) or _TASK.search(t):
+    n = _numbers(text)
+    fired = [k for k, rx in _C.items() if k != "unit" and rx.search(t)]
+    fired = [k for k in fired if k not in _NEEDS_NUMBER or n > 0
+             or (k == "probability" and _PROBABILITY_OBJECTS.search(t))]
+    if _BARE_SUM.match(text) and re.search(r"\d\s*[-−+*/×÷^x]\s*\d", text):
+        fired.append("bare_sum")
+    if _SYMBOL_OP.search(_strip_names(t)):
+        fired.append("symbols")
+    if n >= 3 or (n >= 2 and _C["unit"].search(t)):
+        fired.append("word_problem")
+    return fired
+
+
+def looks_computational(text: str) -> bool:
+    """Shared by the keyword fallback and the consistency tier."""
+    return bool(computational_cues(text))
+
+
+def _needs_facts(text: str, calc: bool) -> bool:
+    text = clean(text)
+    if _PROPER.search(text) or _WH_FACT.search(text):
         return True
-    numbers = len(_NUMBER.findall(t))
-    return numbers >= 3 or (numbers >= 2 and bool(_UNIT.search(t)))
-
-
-def _needs_facts(text: str) -> bool:
-    return bool(_PROPER.search(text) or _WH_FACT.search(text))
+    # a calculation with no numbers given must take them from the world ("how long did the war last")
+    pure = set(computational_cues(text)) & {"proof", "logic", "sequence", "bare_sum", "symbols", "arithmetic"}
+    return calc and _numbers(text) == 0 and not pure
 
 
 def coerce_entities(value) -> list[str]:
@@ -144,8 +243,9 @@ def _profile(risks: list[dict], needs: dict, false_premise: bool, time_sensitive
 
 
 def fallback_profile(question: str, has_history: bool) -> dict:
-    calc, facts = looks_computational(question), _needs_facts(question)
-    follow = has_history and bool(_FOLLOW_UP.search(question))
+    calc = looks_computational(question)
+    facts = _needs_facts(question, calc)
+    follow = has_history and bool(_FOLLOW_UP.search(clean(question)))
     timely = bool(_TIME.search(question))
     risks = []
     if follow:
