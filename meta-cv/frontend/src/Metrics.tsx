@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Bar,
   BarChart,
@@ -11,63 +11,12 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { getMetrics, type HType, type Metrics } from './api'
+import { getMetrics, type Metrics } from './api'
+import { Card, Table } from './charts'
+import { usePalette } from './palette'
 
-const LIGHT = {
-  s1: '#2a78d6', s2: '#eb6834', s3: '#1baf7a', muted: '#898781',
-  grid: '#e1e0d9', axis: '#c3c2b7', ink: '#52514e', surface: '#ffffff',
-}
-const DARK = {
-  s1: '#3987e5', s2: '#d95926', s3: '#199e70', muted: '#898781',
-  grid: '#2c2c2a', axis: '#383835', ink: '#c3c2b7', surface: '#1a1d1f',
-}
-
-function usePalette() {
-  const query = '(prefers-color-scheme: dark)'
-  const [dark, setDark] = useState(() => window.matchMedia(query).matches)
-  useEffect(() => {
-    const mq = window.matchMedia(query)
-    const on = (e: MediaQueryListEvent) => setDark(e.matches)
-    mq.addEventListener('change', on)
-    return () => mq.removeEventListener('change', on)
-  }, [])
-  return dark ? DARK : LIGHT
-}
-
-const TYPES: HType[] = ['factual', 'reasoning', 'consistency']
 const pct = (x: number | null | undefined) => (x == null ? '-' : `${Math.round(x * 100)}%`)
 const num = (x: number | null | undefined) => (x == null ? '-' : Math.round(x).toLocaleString())
-
-function Card({ title, note, table, children }: { title: string; note?: string; table: ReactNode; children: ReactNode }) {
-  const [asTable, setAsTable] = useState(false)
-  return (
-    <section className="card">
-      <div className="card-head">
-        <h2>{title}</h2>
-        <button type="button" className="link" onClick={() => setAsTable(!asTable)}>
-          {asTable ? 'Chart' : 'Table'}
-        </button>
-      </div>
-      {note && <p className="card-note">{note}</p>}
-      {asTable ? <div className="table-wrap">{table}</div> : children}
-    </section>
-  )
-}
-
-function Table({ head, rows }: { head: string[]; rows: (string | number)[][] }) {
-  return (
-    <table>
-      <thead>
-        <tr>{head.map((h) => <th key={h}>{h}</th>)}</tr>
-      </thead>
-      <tbody>
-        {rows.map((r, i) => (
-          <tr key={i}>{r.map((c, j) => <td key={j}>{c}</td>)}</tr>
-        ))}
-      </tbody>
-    </table>
-  )
-}
 
 function Tile({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
@@ -111,16 +60,19 @@ export default function MetricsView() {
   const legend = <Legend wrapperStyle={{ fontSize: 12, color: p.ink }} iconType="circle" iconSize={8} />
   const t = m.totals
   const bench = m.bench
-  const benchRows = bench
-    ? [...TYPES, 'overall' as const].map((type) => {
-        const pick = (side: 'baseline' | 'system') => {
-          const s = bench[side]
-          return s ? (type === 'overall' ? s.overall : s.by_type[type]) : undefined
-        }
-        return { type, baseline: pick('baseline'), system: pick('system') }
-      })
+  const base = bench?.configs?.baseline
+  const full = bench?.configs?.full
+  const sets = Array.from(new Set([...Object.keys(base?.by_set ?? {}), ...Object.keys(full?.by_set ?? {})]))
+  const benchRows = full
+    ? [...sets, 'overall'].map((set) => ({
+        type: set,
+        baseline: set === 'overall' ? base?.overall : base?.by_set[set],
+        system: set === 'overall' ? full.overall : full.by_set[set],
+      }))
     : []
-  const curve = bench?.training?.curve ?? []
+  const curve = bench?.routing?.in_sample_curve ?? []
+  const test = bench?.routing?.test
+  const gh = m.graph_health
 
   return (
     <div className="metrics">
@@ -128,7 +80,7 @@ export default function MetricsView() {
         <p className="card-note">
           Live numbers come from every answered question. Benchmark numbers come from{' '}
           <code>python -m app.bench</code>
-          {bench ? `, last run ${new Date(bench.created_at * 1000).toLocaleString()}` : ' (not run yet)'}.
+          {bench?.meta ? `, last run ${new Date(bench.meta.created_at * 1000).toLocaleString()} (details on the Results tab)` : ' (not run yet)'}.
         </p>
         <button type="button" className="ghost" onClick={load}>
           Refresh
@@ -141,19 +93,23 @@ export default function MetricsView() {
         <Tile label="Fully verified" value={pct(t.success_rate)} sub="or rated right by you / the benchmark" />
         <Tile label="Avg tokens / question" value={num(t.avg_tokens)} sub={`${num(t.tokens_saved)} saved by reuse`} />
         <Tile label="Similar-answer reuse" value={num(t.reused_states)} sub="answers adapted a verified state" />
+        <Tile label="Stopped instead of guessing" value={num(t.stopped)}
+          sub={Object.entries(m.stops).map(([k, v]) => `${k.replaceAll('_', ' ')} ${v}`).join(', ') || 'no stops yet'} />
+        <Tile label="Graph health" value={gh ? `${gh.counts.error ?? 0} errors` : 'not audited'}
+          sub={gh ? `${gh.counts.warning ?? 0} warnings · audited ${new Date(gh.ran_at * 1000).toLocaleTimeString()}` : 'see /audit/summary'} />
       </div>
 
       <div className="grid">
         <Card
-          title="Benchmark: hallucination rate by type"
+          title="Benchmark: hallucination rate by set"
           note={
-            bench
-              ? `Share of ${bench.items} graded questions answered wrongly (declining to answer is not counted as a hallucination). Taxonomy classifier accuracy: ${pct(bench.taxonomy_accuracy)}.`
-              : 'Run the benchmark to compare a plain LLM with this system.'
+            full
+              ? `Share of graded answers that were wrong (declining is counted separately as abstaining), from results/latest.json: ${bench?.meta?.turns ?? '?'} turns.`
+              : 'Run python -m app.bench to compare a plain LLM with this system.'
           }
           table={
             <Table
-              head={['type', 'baseline acc', 'baseline halluc.', 'system acc', 'system halluc.', 'system abstain', 'tokens base / sys']}
+              head={['set', 'baseline acc', 'baseline halluc.', 'system acc', 'system halluc.', 'system abstain', 'tokens base / sys']}
               rows={benchRows.map((r) => [
                 r.type,
                 pct(r.baseline?.accuracy),
@@ -166,7 +122,7 @@ export default function MetricsView() {
             />
           }
         >
-          {bench ? (
+          {full ? (
             <ResponsiveContainer width="100%" height={240}>
               <BarChart
                 data={benchRows.map((r) => ({
@@ -194,7 +150,7 @@ export default function MetricsView() {
           title="Learned routing accuracy"
           note={
             curve.length
-              ? 'Replaying the benchmark in order, learning from scratch: how often the router picked a tier that answered correctly, vs. always using the specialist tier.'
+              ? `In-sample (learned and scored on the same items). Held-out test: learned ${pct(test?.learned)}, specialist only ${pct(test?.static)} (n=${test?.n ?? 0}).`
               : 'Run python -m app.bench --train to measure how routing improves with evidence.'
           }
           table={<Table head={['items seen', 'learned router', 'specialist only']} rows={curve.map((c) => [c.n, pct(c.learned), pct(c.static)])} />}
@@ -282,6 +238,19 @@ export default function MetricsView() {
 
         <section className="card">
           <div className="card-head">
+            <h2>Caught, by risk</h2>
+          </div>
+          <p className="card-note">
+            Live. Outcomes so far: {m.outcomes.correct} correct, {m.outcomes.abstained} abstained, {m.outcomes.hallucinated} rated
+            wrong, {m.outcomes.unknown} unknown.
+          </p>
+          <div className="table-wrap">
+            <Table head={['risk', 'what it means', 'caught']} rows={m.caught_by_risk.map((r) => [r.risk, r.label, r.count])} />
+          </div>
+        </section>
+
+        <section className="card">
+          <div className="card-head">
             <h2>Per-tier performance</h2>
           </div>
           <p className="card-note">Live, excluding cache hits. "Reused" = adapted a similar question's verified state.</p>
@@ -305,15 +274,18 @@ export default function MetricsView() {
             <h2>Router state</h2>
           </div>
           <p className="card-note">
-            Score = observed success rate blended with a prior that favours the specialist, minus a small token cost.
-            The highest score per risk type is the tier used next.
+            Score = P(correct) minus a penalty for P(hallucinated) and a small cost for P(abstained), blended with a prior
+            that favours the specialist, minus a token cost. Outcomes are weighted by signal: benchmark ground truth and
+            your feedback count; the system's own confidence does not. The highest score per risk type is used next.
+            {m.router_frozen ? ' The router is frozen: new answers do not change it.' : ''}
           </p>
           <div className="table-wrap">
             <Table
-              head={['risk type', 'tier', 'answers', 'successes', 'success rate', 'avg tokens', 'score']}
+              head={['risk type', 'tier', 'weighted n', 'correct', 'abstained', 'hallucinated', 'avg tokens', 'score']}
               rows={m.router.map((r) => {
                 const best = Math.max(...m.router.filter((x) => x.type === r.type).map((x) => x.score))
-                return [r.type, r.score === best ? `${r.tier} (chosen)` : r.tier, r.n, r.successes, pct(r.success_rate), num(r.avg_tokens), r.score.toFixed(2)]
+                return [r.type, r.score === best ? `${r.tier} (chosen)` : r.tier, r.n, pct(r.success_rate), pct(r.abstain_rate),
+                  pct(r.hallucination_rate), num(r.avg_tokens), r.score.toFixed(2)]
               })}
             />
           </div>

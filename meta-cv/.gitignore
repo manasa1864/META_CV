@@ -14,7 +14,11 @@ __pycache__/
 
 # local data (recreated by the app, seed script or benchmark)
 *.db
-backend/bench_results/
+*.db-wal
+*.db-shm
+# ...except the bundled deployment files (python -m app.export_snapshot / a real-run state database)
+!data/graph_snapshot.db
+!data/initial_state.db
 
 # OS
 .DS_Store

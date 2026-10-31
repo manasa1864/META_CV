@@ -1,6 +1,8 @@
 import {
+  Component,
   lazy,
   Suspense,
+  useCallback,
   useEffect,
   useId,
   useRef,
@@ -9,10 +11,25 @@ import {
   type FormEvent,
   type ReactNode,
 } from 'react'
-import { sendFeedback, streamChat, type ChatEvent, type Final, type Mode, type PathItem, type Step } from './api'
+import {
+  getExamples,
+  getReplay,
+  getStatus,
+  sendFeedback,
+  streamChat,
+  StreamDropped,
+  type ChatEvent,
+  type Example,
+  type Final,
+  type Mode,
+  type PathItem,
+  type Status,
+  type Step,
+} from './api'
 import './App.css'
 
 const MetricsView = lazy(() => import('./Metrics'))
+const ResultsView = lazy(() => import('./Results'))
 
 type Phase = 'thinking' | 'answering' | 'done' | 'error'
 type BloopMood = 'greeting' | 'thinking' | 'supported' | 'uncertain'
@@ -38,10 +55,29 @@ type Assistant = {
   error?: string
   showThinking: boolean
   feedback?: boolean
+  recorded?: string
+  retry?: string
 }
 type Message = { id: number; role: 'user'; text: string } | Assistant
+type View = 'chat' | 'metrics' | 'results'
 
-const INTRO_KEY = 'prism-intro-v4'
+const INTRO_KEY = 'prism-intro-autoplay'
+
+function stored(key: string): string | null {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function store(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    /* private mode: the choice lasts for this visit only */
+  }
+}
 const WAVE_SRC = '/prism-wave.png'
 
 const STAGES: Record<string, string> = {
@@ -611,27 +647,51 @@ function Intro({ onSkip }: { onSkip: () => void }) {
 
 /* ---------- Chat ---------- */
 
-const prompts: { label: string; icon: IconName; tone: string; question: string }[] = [
-  { label: 'Check a claim', icon: 'check', tone: 'mint', question: 'Was Marie Curie born in Warsaw?' },
-  {
-    label: 'Compare two ideas',
-    icon: 'scale',
-    tone: 'sky',
-    question: 'Compare Pride and Prejudice and 1984: who wrote each, and when were they published?',
-  },
-  {
-    label: 'Explain something complex',
-    icon: 'bulb',
-    tone: 'sun',
-    question: 'Who are the main characters in Pride and Prejudice and what happens between them?',
-  },
-  {
-    label: 'Investigate conflicting info',
-    icon: 'search',
-    tone: 'coral',
-    question: 'Some say Jane Austen was born in Bath. Where was she actually born?',
-  },
+const EXAMPLE_STYLE: Record<string, { icon: IconName; tone: string }> = {
+  'false-premise': { icon: 'search', tone: 'coral' },
+  'fact-check': { icon: 'check', tone: 'mint' },
+  calculation: { icon: 'bulb', tone: 'sun' },
+  mixed: { icon: 'scale', tone: 'sky' },
+  'follow-up': { icon: 'replay', tone: 'lav' },
+}
+
+/** Used only if /api/examples cannot be reached. */
+const FALLBACK_EXAMPLES: Example[] = [
+  { id: 'false-premise', label: 'False premise', tier: 'factual', replay: false,
+    turns: ['Why did Albert Einstein win the Nobel Prize in 1905?'] },
+  { id: 'fact-check', label: 'Facts checked against the graph', tier: 'factual', replay: false,
+    turns: ['Who wrote Pride and Prejudice, and where was the author born?'] },
+  { id: 'calculation', label: 'Checked calculation', tier: 'reasoning', replay: false,
+    turns: ['A shop has 12 boxes with 7 apples each. 4 apples are eaten. How many apples are left?'] },
+  { id: 'follow-up', label: 'Follow-up question', tier: 'consistency', replay: false,
+    turns: ['Who wrote 1984?', 'Where was he born?'] },
 ]
+
+/** Live, replay or unavailable: decides what an example chip does. */
+function liveModel(status: Status | null) {
+  return !status || (status.llm.configured && !status.llm.breaker_open)
+}
+
+function Banner({ status }: { status: Status | null }) {
+  if (!status) return null
+  const notes: [string, string][] = []
+  if (status.scripted) notes.push(['sun', 'Scripted demo (no model): answers come from a fixed script, not a live model.'])
+  else if (!liveModel(status))
+    notes.push(['coral', 'The live model is unavailable right now. Examples play recorded runs (Replay mode).'])
+  if (status.degraded) notes.push(['sun', 'Running on a local snapshot of the knowledge graph (read-only).'])
+  if (status.health.verified_only)
+    notes.push(['sun', `Verified-only mode: only graph-backed facts are used (${status.health.reason}).`])
+  if (!notes.length) return null
+  return (
+    <div className="banners" role="status">
+      {notes.map(([tone, text]) => (
+        <p key={text} className={`banner tone-${tone}`}>
+          {text}
+        </p>
+      ))}
+    </div>
+  )
+}
 
 function ChatComposer({
   onSubmit,
@@ -679,10 +739,16 @@ function ChatComposer({
 
 function Greeting({
   onAsk,
+  onExample,
+  examples,
+  live,
   evidence,
   setEvidence,
 }: {
   onAsk: (value: string) => void
+  onExample: (example: Example) => void
+  examples: Example[]
+  live: boolean
   evidence: boolean
   setEvidence: (value: boolean) => void
 }) {
@@ -695,14 +761,24 @@ function Greeting({
       </div>
       <ChatComposer onSubmit={onAsk} evidence={evidence} setEvidence={setEvidence} />
       <div className="prompt-row">
-        {prompts.map((prompt) => (
-          <Button key={prompt.label} className={`prompt-chip tone-${prompt.tone}`} onClick={() => onAsk(prompt.question)}>
-            <span className="chip-icon">
-              <Icon name={prompt.icon} />
-            </span>
-            {prompt.label}
-          </Button>
-        ))}
+        {examples.map((ex) => {
+          const style = EXAMPLE_STYLE[ex.id] ?? { icon: 'check' as IconName, tone: 'mint' }
+          const replayOnly = !live
+          return (
+            <Button
+              key={ex.id}
+              className={`prompt-chip tone-${style.tone}`}
+              onClick={() => onExample(ex)}
+              disabled={replayOnly && !ex.replay}
+            >
+              <span className="chip-icon">
+                <Icon name={style.icon} />
+              </span>
+              {ex.label}
+              {replayOnly && <small className="chip-note">{ex.replay ? 'Recorded run' : 'No recording yet'}</small>}
+            </Button>
+          )
+        })}
       </div>
       <p className="promise">Bloop shows where every answer comes from. It can still get things wrong, so double-check what matters.</p>
     </main>
@@ -802,7 +878,37 @@ const TIER_LINE: Record<string, string> = {
   consistency: 'Answered from statements this conversation already verified, re-checked against the graph.',
 }
 
+const STOP_REASONS: Record<string, string> = {
+  nothing_verified: 'No claim passed verification, so Bloop declined rather than guess.',
+  false_premise: 'The question assumes something the knowledge graph contradicts.',
+  graph_conflict: 'The knowledge graph itself holds conflicting facts about this, so Bloop did not answer.',
+  premise_unverified: 'The calculation needed a fact that could not be verified.',
+  budget: 'The question needed more checking than one answer is allowed.',
+}
+
+const RISK_LABELS: Record<string, string> = {
+  'factual.entity_error': 'Wrong entity, date or number',
+  'factual.relation_error': 'Wrong relation between facts',
+  'factual.fabrication': 'Unverified detail added',
+  'factual.overclaim': 'False premise',
+  'faithful.logic': 'Faulty step or calculation',
+  'faithful.context': 'Contradicted an earlier answer',
+  'faithful.premise': 'Calculation on an unverified fact',
+  'temporal.stale': 'Possibly out of date',
+}
+
 function Verification({ final }: { final: Final }) {
+  if (final.stopped) {
+    return (
+      <div className="verification verification-uncertain">
+        <span className="status-icon">?</span>
+        <div>
+          <b>Stopped instead of guessing</b>
+          <p>{STOP_REASONS[final.stopped.reason] ?? final.stopped.detail}</p>
+        </div>
+      </div>
+    )
+  }
   const high = final.confidence === 'high'
   const title = high ? 'Backed by the checks' : final.confidence === 'medium' ? 'Partly verified' : 'Could not fully verify'
   const extra = final.from_cache
@@ -881,9 +987,7 @@ function Evidence({ final, showTrace }: { final: Final; showTrace: boolean }) {
             <div className="source" key={`c${i}`}>
               <span className="source-num tone-coral">!</span>
               <div>
-                <b>
-                  {c.type} hallucination {c.action}
-                </b>
+                <b>{(c.risk && RISK_LABELS[c.risk]) ?? `${c.type} hallucination`}</b>
                 <small>{c.detail}</small>
               </div>
               <span className="source-tag tone-coral">{c.action}</span>
@@ -891,10 +995,12 @@ function Evidence({ final, showTrace }: { final: Final; showTrace: boolean }) {
           ))}
           {showTrace && (
             <div className="trace">
-              <span>ROUTING</span> {final.hallucination_type} risk → {final.tier} tier
+              <span>ROUTING</span> {final.hallucination_type} risk → {(final.plan ?? [final.tier]).join(' → ')} tier
               {final.mode ? ` (${final.mode})` : ''}
               {final.router?.learned ? ' · learned route' : ''}
-              {final.from_cache ? ' · cache hit' : ''} <b>{final.tokens.calls} calls</b>
+              {final.classifier === 'fallback' ? ' · keyword fallback' : ''}
+              {final.from_cache ? ' · cache hit' : ''}
+              {final.degraded ? ' · graph snapshot' : ''} <b>{final.tokens.calls} calls</b>
             </div>
           )}
         </div>
@@ -904,9 +1010,11 @@ function Evidence({ final, showTrace }: { final: Final; showTrace: boolean }) {
 }
 
 function headerFor(m: Assistant): [BloopMood, string, string] {
-  if (m.phase === 'thinking') return ['thinking', 'Thinking', 'sky']
+  if (m.phase === 'thinking') return ['thinking', m.recorded ? 'Recorded run' : 'Thinking', 'sky']
   if (m.phase === 'error') return ['uncertain', 'Something went wrong', 'coral']
   if (!m.final) return ['thinking', 'Processing complete', 'lav']
+  if (m.recorded) return [m.final.confidence === 'high' ? 'supported' : 'uncertain', 'Recorded run', 'lav']
+  if (m.final.stopped) return ['uncertain', 'Stopped instead of guessing', 'sun']
   if (m.final.confidence === 'high') return ['supported', 'Checked', 'mint']
   if (m.final.confidence === 'medium') return ['uncertain', 'Some uncertainty', 'sun']
   return ['uncertain', 'Not verified', 'coral']
@@ -918,17 +1026,20 @@ function AssistantMessage({
   showTrace,
   onToggleThinking,
   onRate,
+  onRetry,
 }: {
   m: Assistant
   evidence: boolean
   showTrace: boolean
   onToggleThinking: () => void
   onRate: (helpful: boolean) => void
+  onRetry: (question: string) => void
 }) {
   const [mood, label, tone] = headerFor(m)
   return (
     <article className="answer">
       <MessageHeader mood={mood} label={label} tone={tone} />
+      {m.recorded && <p className="recorded-note">Recorded run · {m.recorded}. Not a live answer.</p>}
       {m.phase === 'thinking' && (
         <div className="thinking-block">
           <div className="progress">
@@ -950,10 +1061,19 @@ function AssistantMessage({
         </div>
       )}
       {m.answer && <Text text={m.answer} />}
-      {m.error && <div className="chat-error">{m.error}</div>}
-      {m.final && evidence && <Verification final={m.final} />}
+      {m.error && (
+        <div className="chat-error">
+          {m.error}
+          {m.retry && (
+            <Button className="feedback-btn retry-btn" onClick={() => onRetry(m.retry!)}>
+              Try again
+            </Button>
+          )}
+        </div>
+      )}
+      {m.final && (evidence || m.final.stopped) && <Verification final={m.final} />}
       {m.final && evidence && <Evidence final={m.final} showTrace={showTrace} />}
-      {m.final && (
+      {m.final && !m.recorded && (
         <div className="feedback">
           {m.feedback === undefined ? (
             <>
@@ -985,6 +1105,8 @@ function Settings({
   setShowTrace,
   mode,
   setMode,
+  autoIntro,
+  setAutoIntro,
 }: {
   dreamy: boolean
   setDreamy: (value: boolean) => void
@@ -996,6 +1118,8 @@ function Settings({
   setShowTrace: (value: boolean) => void
   mode: Mode
   setMode: (value: Mode) => void
+  autoIntro: boolean
+  setAutoIntro: (value: boolean) => void
 }) {
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
@@ -1044,6 +1168,16 @@ function Settings({
         </Button>
         <div className="settings-row">
           <span>
+            <b>Play the intro on start</b>
+            <small>Off by default; remembered on this device</small>
+          </span>
+          <label className="switch">
+            <input type="checkbox" checked={autoIntro} onChange={(e) => setAutoIntro(e.target.checked)} />
+            <i />
+          </label>
+        </div>
+        <div className="settings-row">
+          <span>
             <b>Reasoning mode</b>
             <small>How hard maths and logic answers are cross-checked</small>
           </span>
@@ -1079,24 +1213,47 @@ function Settings({
   )
 }
 
-export default function App() {
+const pathView = (): View => (window.location.pathname.replace(/\/+$/, '') === '/results' ? 'results' : 'chat')
+
+class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children
+    return (
+      <main className="greeting">
+        <Bloop mood="uncertain" size={150} />
+        <div className="greeting-copy">
+          <h1>Something broke</h1>
+          <p>The page hit an unexpected error. Reloading usually fixes it.</p>
+        </div>
+        <Button className="feedback-btn" onClick={() => window.location.reload()}>
+          Reload
+        </Button>
+      </main>
+    )
+  }
+}
+
+function PrismApp() {
   const prefersStill = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  const [dreamy, setDreamy] = useState(!prefersStill)
-  const [intro, setIntro] = useState(() => {
-    try {
-      return !prefersStill && !sessionStorage.getItem(INTRO_KEY)
-    } catch {
-      return !prefersStill
-    }
-  })
+  const [dreamy, setDreamy] = useState(() => stored('prism-dreamy') !== 'off' && !prefersStill)
+  const [autoIntro, setAutoIntroState] = useState(() => stored(INTRO_KEY) === 'on')
+  const [intro, setIntro] = useState(() => !prefersStill && stored(INTRO_KEY) === 'on')
   const [settings, setSettings] = useState(false)
   const [evidence, setEvidence] = useState(true)
   const [showTrace, setShowTrace] = useState(true)
   const [messages, setMessages] = useState<Message[]>([])
   const [mode, setMode] = useState<Mode>('auto')
   const [busy, setBusy] = useState(false)
-  const [view, setView] = useState<'chat' | 'metrics'>('chat')
+  const [view, setViewState] = useState<View>(pathView)
   const [conversationId, setConversationId] = useState(newConversationId)
+  const [status, setStatus] = useState<Status | null>(null)
+  const [examples, setExamples] = useState<Example[]>(FALLBACK_EXAMPLES)
   const nextId = useRef(1)
   const bottom = useRef<HTMLDivElement>(null)
 
@@ -1104,14 +1261,43 @@ export default function App() {
     bottom.current?.scrollIntoView({ block: 'end' })
   }, [messages])
 
-  function finishIntro() {
-    try {
-      sessionStorage.setItem(INTRO_KEY, 'seen')
-    } catch {
-      /* private mode: the intro just plays again next time */
+  useEffect(() => {
+    let alive = true
+    const poll = () =>
+      getStatus()
+        .then((s) => {
+          if (alive) setStatus(s)
+        })
+        .catch(() => {
+          if (alive) setStatus(null)
+        })
+    poll()
+    const id = window.setInterval(poll, 60000)
+    getExamples()
+      .then((ex) => {
+        if (alive && ex.length) setExamples(ex)
+      })
+      .catch(() => undefined)
+    const onPop = () => setViewState(pathView())
+    window.addEventListener('popstate', onPop)
+    return () => {
+      alive = false
+      window.clearInterval(id)
+      window.removeEventListener('popstate', onPop)
     }
-    setIntro(false)
+  }, [])
+
+  useEffect(() => {
+    document.title = view === 'results' ? 'Prism · Results' : view === 'metrics' ? 'Prism · Metrics' : 'Prism · verified answers'
+  }, [view])
+
+  function setView(next: View) {
+    const path = next === 'results' ? '/results' : '/'
+    if (window.location.pathname !== path) window.history.pushState(null, '', path)
+    setViewState(next)
   }
+
+  const finishIntro = useCallback(() => setIntro(false), [])
   function replayIntro() {
     setSettings(false)
     setDreamy(true)
@@ -1119,26 +1305,31 @@ export default function App() {
   }
   function updateMode(value: boolean) {
     setDreamy(value)
+    store('prism-dreamy', value ? 'on' : 'off')
     if (!value) finishIntro()
+  }
+  function setAutoIntro(value: boolean) {
+    setAutoIntroState(value)
+    store(INTRO_KEY, value ? 'on' : 'off')
   }
 
   const update = (id: number, fn: (m: Assistant) => Partial<Assistant>) =>
     setMessages((prev) => prev.map((m) => (m.id === id && m.role === 'assistant' ? { ...m, ...fn(m) } : m)))
 
-  async function ask(question: string) {
-    if (!question || busy) return
-    setView('chat')
+  function addTurn(question: string, recorded?: string) {
     const qid = nextId.current++
     const aid = nextId.current++
     setMessages((prev) => [
       ...prev,
       { id: qid, role: 'user', text: question },
-      { id: aid, role: 'assistant', steps: [], phase: 'thinking', answer: '', showThinking: false },
+      { id: aid, role: 'assistant', steps: [], phase: 'thinking', answer: '', showThinking: false, recorded },
     ])
-    setBusy(true)
+    return aid
+  }
 
+  function handler(aid: number, gap: number) {
     const seen = new Set<string>()
-    const onEvent = async (ev: ChatEvent) => {
+    return async (ev: ChatEvent) => {
       switch (ev.type) {
         case 'step': {
           const isNew = !seen.has(ev.id)
@@ -1146,12 +1337,12 @@ export default function App() {
           update(aid, (m) => ({
             steps: isNew ? [...m.steps, ev] : m.steps.map((s) => (s.id === ev.id ? ev : s)),
           }))
-          if (isNew) await sleep(STEP_GAP_MS)
+          if (isNew && gap) await sleep(gap)
           break
         }
         case 'thinking_done':
           update(aid, () => ({ phase: 'answering' }))
-          await sleep(400)
+          await sleep(gap ? 400 : 0)
           break
         case 'answer':
           update(aid, (m) => ({ answer: m.answer + ev.delta }))
@@ -1168,19 +1359,64 @@ export default function App() {
           break
       }
     }
+  }
 
+  async function ask(question: string, convId = conversationId) {
+    if (!question) return
+    setView('chat')
+    const aid = addTurn(question)
+    setBusy(true)
     try {
-      await streamChat(question, mode, conversationId, onEvent)
+      await streamChat(question, mode, convId, handler(aid, STEP_GAP_MS))
     } catch (err) {
+      const dropped = err instanceof StreamDropped
+      const message = err instanceof Error ? err.message : String(err)
       update(aid, (m) => ({
         phase: 'error',
-        error: String(err),
+        error: dropped ? `${message} The answer may still have been logged.` : message,
+        retry: question,
         steps: m.steps.map((s) => (s.status === 'running' ? { ...s, status: 'fail' } : s)),
       }))
     } finally {
       update(aid, (m) => (m.phase === 'answering' ? { phase: 'done' } : {}))
       setBusy(false)
     }
+  }
+
+  async function playReplay(ex: Example) {
+    setView('chat')
+    setBusy(true)
+    try {
+      const rec = await getReplay(ex.id)
+      const when = new Date(rec.recorded_at * 1000).toLocaleDateString()
+      for (const turn of rec.turns) {
+        const aid = addTurn(turn.question, `${rec.model || 'model'}, ${when}`)
+        const onEvent = handler(aid, 0)
+        let last = 0
+        for (const { t, event } of turn.events) {
+          await sleep(Math.min(700, Math.max(0, (t - last) * 1000)))
+          last = t
+          await onEvent(event)
+        }
+      }
+    } catch (err) {
+      const aid = addTurn(ex.turns[0], 'unavailable')
+      update(aid, () => ({ phase: 'error', error: `The recorded run could not be loaded (${String(err)}).` }))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function runExample(ex: Example) {
+    if (busy) return
+    if (!liveModel(status)) {
+      if (ex.replay) await playReplay(ex)
+      return
+    }
+    const conv = newConversationId()
+    setMessages([])
+    setConversationId(conv)
+    for (const q of ex.turns) await ask(q, conv)
   }
 
   async function rate(id: number, turnId: number, helpful: boolean) {
@@ -1199,6 +1435,7 @@ export default function App() {
     setView('chat')
   }
 
+  const live = liveModel(status)
   return (
     <div className={`app ${dreamy ? 'dreamy' : 'still'}`}>
       {intro && <Intro onSkip={finishIntro} />}
@@ -1216,6 +1453,9 @@ export default function App() {
             <Button className={view === 'metrics' ? 'active' : ''} onClick={() => setView('metrics')}>
               Metrics
             </Button>
+            <Button className={view === 'results' ? 'active' : ''} onClick={() => setView('results')}>
+              Results
+            </Button>
           </nav>
           {evidence && (
             <span className="evidence-on">
@@ -1228,6 +1468,8 @@ export default function App() {
         </div>
       </header>
 
+      {view === 'chat' && <Banner status={status} />}
+
       {view === 'metrics' && (
         <main className="metrics-view">
           <Suspense fallback={<div className="metrics"><p className="card-note">Loading…</p></div>}>
@@ -1236,7 +1478,24 @@ export default function App() {
         </main>
       )}
 
-      {view === 'chat' && messages.length === 0 && <Greeting onAsk={ask} evidence={evidence} setEvidence={setEvidence} />}
+      {view === 'results' && (
+        <main className="metrics-view">
+          <Suspense fallback={<div className="metrics"><p className="card-note">Loading…</p></div>}>
+            <ResultsView />
+          </Suspense>
+        </main>
+      )}
+
+      {view === 'chat' && messages.length === 0 && (
+        <Greeting
+          onAsk={(q) => ask(q)}
+          onExample={runExample}
+          examples={examples}
+          live={live}
+          evidence={evidence}
+          setEvidence={setEvidence}
+        />
+      )}
 
       {view === 'chat' && messages.length > 0 && (
         <main className="conversation">
@@ -1254,13 +1513,14 @@ export default function App() {
                   showTrace={showTrace}
                   onToggleThinking={() => update(m.id, (a) => ({ showThinking: !a.showThinking }))}
                   onRate={(helpful) => m.final && rate(m.id, m.final.turn_id, helpful)}
+                  onRetry={(q) => ask(q)}
                 />
               ),
             )}
             <div ref={bottom} />
           </div>
           <div className="sticky-composer">
-            <ChatComposer compact onSubmit={ask} disabled={busy} evidence={evidence} setEvidence={setEvidence} />
+            <ChatComposer compact onSubmit={(q) => ask(q)} disabled={busy} evidence={evidence} setEvidence={setEvidence} />
           </div>
         </main>
       )}
@@ -1277,8 +1537,18 @@ export default function App() {
           setShowTrace={setShowTrace}
           mode={mode}
           setMode={setMode}
+          autoIntro={autoIntro}
+          setAutoIntro={setAutoIntro}
         />
       )}
     </div>
+  )
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <PrismApp />
+    </ErrorBoundary>
   )
 }

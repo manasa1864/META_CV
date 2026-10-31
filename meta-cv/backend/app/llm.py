@@ -1,27 +1,29 @@
-"""Thin wrapper over the Meta API (OpenAI-compatible), with per-run token metering."""
+"""Meta API (OpenAI-compatible) client: one shared client, timeouts, retry with backoff and jitter,
+a circuit breaker, and per-question metering/budgets (meter.py)."""
 import json
+import random
 import re
-from contextlib import contextmanager
-from contextvars import ContextVar
+import threading
+import time
 
+import openai
 from openai import OpenAI
 
 from . import config
+from .meter import metered, metering, new_meter  # noqa: F401  (re-exported for callers)
+from .meter import before_llm_call, record_llm
 
 
 class LLMNotConfigured(RuntimeError):
     pass
 
 
+class LLMUnavailable(RuntimeError):
+    """The model kept failing (or the breaker is open)."""
+
+
 class LLMBadOutput(ValueError):
     pass
-
-
-_meter: ContextVar[dict | None] = ContextVar("llm_meter", default=None)
-
-
-def new_meter() -> dict:
-    return {"prompt": 0, "completion": 0, "calls": 0}
 
 
 def estimate_tokens(text: str) -> int:
@@ -29,41 +31,77 @@ def estimate_tokens(text: str) -> int:
 
 
 def record_usage(prompt: int, completion: int) -> None:
-    m = _meter.get()
-    if m is not None:
-        m["prompt"] += prompt
-        m["completion"] += completion
-        m["calls"] += 1
+    record_llm(prompt, completion)
 
 
-@contextmanager
-def metering(meter: dict):
-    token = _meter.set(meter)
-    try:
-        yield meter
-    finally:
-        _meter.reset(token)
+def configured() -> bool:
+    return bool(config.META_API_KEY and config.META_BASE_URL and config.META_MODEL)
 
 
-def metered(gen, meter: dict):
-    """Drive a generator so every LLM call made inside it is counted in `meter`.
-
-    The meter is set around each step, not once, because a streaming response may
-    resume the generator from a different thread (and so a different context).
-    """
-    while True:
-        with metering(meter):
-            try:
-                item = next(gen)
-            except StopIteration as stop:
-                return stop.value
-        yield item
+_client_obj: OpenAI | None = None
+_client_lock = threading.Lock()
 
 
 def _client() -> OpenAI:
-    if not (config.META_API_KEY and config.META_BASE_URL and config.META_MODEL):
-        raise LLMNotConfigured("Set META_API_KEY, META_BASE_URL and META_MODEL in backend/.env")
-    return OpenAI(api_key=config.META_API_KEY, base_url=config.META_BASE_URL)
+    global _client_obj
+    if not configured():
+        raise LLMNotConfigured("The language model is not configured (META_API_KEY, META_BASE_URL, META_MODEL)")
+    with _client_lock:
+        if _client_obj is None:
+            _client_obj = OpenAI(api_key=config.META_API_KEY, base_url=config.META_BASE_URL,
+                                 timeout=config.LLM_TIMEOUT, max_retries=0)
+        return _client_obj
+
+
+class Breaker:
+    """Opens after N consecutive failures; while open, calls fail fast until the cooldown passes."""
+
+    def __init__(self):
+        self.failures, self.opened_at, self._lock = 0, 0.0, threading.Lock()
+
+    def is_open(self) -> bool:
+        return self.failures >= config.LLM_BREAKER_FAILURES and time.time() - self.opened_at < config.LLM_BREAKER_COOLDOWN
+
+    def success(self) -> None:
+        with self._lock:
+            self.failures = 0
+
+    def failure(self) -> None:
+        with self._lock:
+            self.failures += 1
+            if self.failures >= config.LLM_BREAKER_FAILURES:
+                self.opened_at = time.time()
+
+
+breaker = Breaker()
+_RETRYABLE = (openai.APITimeoutError, openai.APIConnectionError, openai.RateLimitError, openai.InternalServerError)
+
+
+def status() -> dict:
+    return {"configured": configured(), "breaker_open": breaker.is_open()}
+
+
+def _complete(system: str, user: str, temperature: float):
+    if breaker.is_open():
+        raise LLMUnavailable("the language model is temporarily unavailable")
+    last = None
+    for attempt in range(max(1, config.LLM_RETRIES)):
+        try:
+            resp = _client().chat.completions.create(
+                model=config.META_MODEL, temperature=temperature,
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            )
+            breaker.success()
+            return resp
+        except _RETRYABLE as e:
+            last = e
+        except openai.APIStatusError as e:
+            if e.status_code < 500:
+                raise
+            last = e
+        time.sleep(min(8.0, 0.5 * 2 ** attempt) + random.random() * 0.3)
+    breaker.failure()
+    raise LLMUnavailable(f"the language model failed after {config.LLM_RETRIES} attempts") from last
 
 
 def _parse_json(text: str):
@@ -78,11 +116,8 @@ def _parse_json(text: str):
 
 
 def chat_text(system: str, user: str, temperature: float = 0) -> str:
-    resp = _client().chat.completions.create(
-        model=config.META_MODEL,
-        temperature=temperature,
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-    )
+    before_llm_call()
+    resp = _complete(system, user, temperature)
     text = resp.choices[0].message.content or ""
     u = getattr(resp, "usage", None)
     if u is not None and u.prompt_tokens is not None:

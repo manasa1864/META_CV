@@ -1,4 +1,7 @@
-"""Demo backend: real pipeline + seeded SQLite graph, with a scripted stand-in for the LLM (no API key needed)."""
+"""Demo backend: real pipeline + seeded SQLite graph, with a scripted stand-in for the LLM (no API key needed).
+
+The UI labels everything from this server "Scripted demo (no model)": it is never presented as a live run.
+"""
 import os
 import sys
 import time
@@ -7,7 +10,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 os.environ["GRAPH_BACKEND"] = "sqlite"
 os.environ["DB_PATH"] = str(HERE / "demo.db")
-Path(os.environ["DB_PATH"]).unlink(missing_ok=True)
+os.environ["SCRIPTED_DEMO"] = "1"
+os.environ["META_NO_HOME_ENV"] = "1"
+for suffix in ("", "-wal", "-shm"):
+    Path(os.environ["DB_PATH"] + suffix).unlink(missing_ok=True)
 sys.path.insert(0, str(HERE / "backend"))
 
 from app import llm  # noqa: E402
@@ -15,9 +21,15 @@ from app import llm  # noqa: E402
 
 def fake(system, user, temperature=0):
     time.sleep(0.4)  # feel like a model call
-    if system.startswith("Classify"):
-        mathy = any(ch.isdigit() for ch in user.split("Question:")[-1])
-        return {"type": "reasoning" if mathy else "factual", "entities": ["pride and prejudice"], "why": "demo"}
+    if system.startswith("Profile the hallucination risks"):
+        q = user.split("Question:")[-1]
+        if "Conversation so far" in user:
+            return {"risks": [{"label": "faithful.context", "weight": 0.9}], "entities": ["pride and prejudice"], "why": "demo"}
+        mathy = any(ch.isdigit() for ch in q)
+        return {"risks": [{"label": "faithful.logic" if mathy else "factual.entity_error", "weight": 0.9}],
+                "entities": ["pride and prejudice"], "why": "demo"}
+    if system.startswith("List the atomic factual claims"):
+        return {"claims": []}
     if system.startswith("The user asks a follow-up"):
         follow_up = user.split("Follow-up:")[-1].strip()
         return {"answerable": False, "standalone": follow_up,
