@@ -1,0 +1,76 @@
+{
+ "description": "Held-out taxonomy questions, written and committed BEFORE the keyword fallback was revised, and never used to tune it. Report this score next to the development set (taxonomy_cases.json): if only the development score rises, the rules are overfitted. Same label conventions: mixed questions are type reasoning with needs.facts true.",
+ "cases": [
+  {"id": "h-pf01", "category": "plain_factual", "question": "Which author created Sherlock Holmes?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-pf02", "category": "plain_factual", "question": "what's the tallest mountain in africa", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-pf03", "category": "plain_factual", "question": "Can you tell me who invented the telephone?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-pf04", "category": "plain_factual", "question": "Name the planets that have rings.", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-pf05", "category": "plain_factual", "question": "Is Canberra the capital of Australia?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-pf06", "category": "plain_factual", "question": "Who designed the Boeing 747?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-pf07", "category": "plain_factual", "question": "What changed in Python 3.12?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-pf08", "category": "plain_factual", "question": "When did World War 2 end?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-pf09", "category": "plain_factual", "question": "What was COVID-19?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-pf10", "category": "plain_factual", "question": "Who won Super Bowl 50?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-pf11", "category": "plain_factual", "question": "Tell me about the 2008 financial crisis.", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-pf12", "category": "plain_factual", "question": "Which novel begins with the line about a single man in possession of a good fortune?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+
+  {"id": "h-ct01", "category": "counts", "question": "How many strings does a violin have?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-ct02", "category": "counts", "question": "How many countries are in the European Union?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-ct03", "category": "counts", "question": "What percentage of the human body is water?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-ct04", "category": "counts", "question": "How much does the Eiffel Tower weigh?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-ct05", "category": "counts", "question": "What is the average temperature on Mars?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-ct06", "category": "counts", "question": "How many Harry Potter books are there?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+
+  {"id": "h-rd01", "category": "ranges_dates", "question": "Who was the British prime minister during 1940-1945?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-rd02", "category": "ranges_dates", "question": "What happened on 20/07/1969?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-rd03", "category": "ranges_dates", "question": "Which empire ruled from 27 BC to AD 476?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-rd04", "category": "ranges_dates", "question": "Who wrote the 1813 novel about the Bennet family?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-rd05", "category": "ranges_dates", "question": "What was the score of the 2014 World Cup final?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+
+  {"id": "h-pr01", "category": "plain_reasoning", "question": "What's 45 times 12?", "type": "reasoning", "needs": {"facts": false, "calculation": true, "history": false}},
+  {"id": "h-pr02", "category": "plain_reasoning", "question": "Divide 1,440 by 36.", "type": "reasoning", "needs": {"facts": false, "calculation": true, "history": false}},
+  {"id": "h-pr03", "category": "plain_reasoning", "question": "what is 18 percent of 450", "type": "reasoning", "needs": {"facts": false, "calculation": true, "history": false}},
+  {"id": "h-pr04", "category": "plain_reasoning", "question": "Find the median of 3, 9, 4, 12 and 7.", "type": "reasoning", "needs": {"facts": false, "calculation": true, "history": false}},
+  {"id": "h-pr05", "category": "plain_reasoning", "question": "Convert 72 degrees Fahrenheit to Celsius.", "type": "reasoning", "needs": {"facts": false, "calculation": true, "history": false}},
+  {"id": "h-pr06", "category": "plain_reasoning", "question": "What is the volume of a cube with sides of 4 cm?", "type": "reasoning", "needs": {"facts": false, "calculation": true, "history": false}},
+  {"id": "h-pr07", "category": "plain_reasoning", "question": "If no cats are dogs and some pets are cats, are some pets not dogs?", "type": "reasoning", "needs": {"facts": false, "calculation": true, "history": false}},
+  {"id": "h-pr08", "category": "plain_reasoning", "question": "What is the remainder when 100 is divided by 7?", "type": "reasoning", "needs": {"facts": false, "calculation": true, "history": false}},
+
+  {"id": "h-wp01", "category": "word_problem", "question": "I earn $3,200 a month and spend a quarter of it on rent. How much is left?", "type": "reasoning", "needs": {"facts": false, "calculation": true, "history": false}},
+  {"id": "h-wp02", "category": "word_problem", "question": "A pool fills at 15 litres a minute. How long until it holds 900 litres?", "type": "reasoning", "needs": {"facts": false, "calculation": true, "history": false}},
+  {"id": "h-wp03", "category": "word_problem", "question": "Tom is twice as old as his sister, who is eight. How old will Tom be in five years?", "type": "reasoning", "needs": {"facts": false, "calculation": true, "history": false}},
+  {"id": "h-wp04", "category": "word_problem", "question": "A train leaves at 9:15 and covers 210 km at 84 km/h. When does it arrive?", "type": "reasoning", "needs": {"facts": false, "calculation": true, "history": false}},
+  {"id": "h-wp05", "category": "word_problem", "question": "Three shirts cost $24.99 each and tax is 8%. What is the total?", "type": "reasoning", "needs": {"facts": false, "calculation": true, "history": false}},
+  {"id": "h-wp06", "category": "word_problem", "question": "If a phone loses half its value every year, what is a $900 phone worth after three years?", "type": "reasoning", "needs": {"facts": false, "calculation": true, "history": false}},
+  {"id": "h-wp07", "category": "word_problem", "question": "A recipe for six people uses two cups of flour. How much flour for fifteen people?", "type": "reasoning", "needs": {"facts": false, "calculation": true, "history": false}},
+
+  {"id": "h-pv01", "category": "proof", "question": "Show that every multiple of 4 is even.", "type": "reasoning", "needs": {"facts": false, "calculation": true, "history": false}},
+  {"id": "h-pv02", "category": "proof", "question": "Prove that the sum of the first n odd numbers is n squared.", "type": "reasoning", "needs": {"facts": false, "calculation": true, "history": false}},
+  {"id": "h-pv03", "category": "proof", "question": "Can you derive the area of a triangle from the area of a rectangle?", "type": "reasoning", "needs": {"facts": false, "calculation": true, "history": false}},
+
+  {"id": "h-mx01", "category": "mixed", "question": "How old was Jane Austen when Pride and Prejudice was published?", "type": "reasoning", "needs": {"facts": true, "calculation": true, "history": false}},
+  {"id": "h-mx02", "category": "mixed", "question": "How long did the Second World War last?", "type": "reasoning", "needs": {"facts": true, "calculation": true, "history": false}},
+  {"id": "h-mx03", "category": "mixed", "question": "Which came out first, 1984 or To Kill a Mockingbird, and by how many years?", "type": "reasoning", "needs": {"facts": true, "calculation": true, "history": false}},
+  {"id": "h-mx04", "category": "mixed", "question": "What is the difference in height between Mount Everest and K2?", "type": "reasoning", "needs": {"facts": true, "calculation": true, "history": false}},
+  {"id": "h-mx05", "category": "mixed", "question": "How many years did Abraham Lincoln serve as president?", "type": "reasoning", "needs": {"facts": true, "calculation": true, "history": false}},
+  {"id": "h-mx06", "category": "mixed", "question": "Combined, how many legs do a spider and an ant have?", "type": "reasoning", "needs": {"facts": true, "calculation": true, "history": false}},
+  {"id": "h-mx07", "category": "mixed", "question": "how many years apart were einstein and marie curie born", "type": "reasoning", "needs": {"facts": true, "calculation": true, "history": false}},
+
+  {"id": "h-fp01", "category": "false_premise", "question": "Why did Marie Curie win three Nobel Prizes?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}, "false_premise": true},
+  {"id": "h-fp02", "category": "false_premise", "question": "In which city did George Orwell write Pride and Prejudice?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}, "false_premise": true},
+  {"id": "h-fp03", "category": "false_premise", "question": "When did Australia's capital move from Sydney to Melbourne?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}, "false_premise": true},
+
+  {"id": "h-ts01", "category": "time_sensitive", "question": "Who currently leads the United Nations?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}, "time_sensitive": true},
+  {"id": "h-ts02", "category": "time_sensitive", "question": "What's the latest version of Android?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}, "time_sensitive": true},
+  {"id": "h-ts03", "category": "time_sensitive", "question": "Is the James Webb telescope still sending images today?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}, "time_sensitive": true},
+
+  {"id": "h-fh01", "category": "follow_up_history", "question": "And when was it published?", "history": [{"question": "Who wrote 1984?", "answer": "George Orwell."}], "type": "consistency", "needs": {"facts": true, "calculation": false, "history": true}},
+  {"id": "h-fh02", "category": "follow_up_history", "question": "How old was he then?", "history": [{"question": "When was 1984 published, and by whom?", "answer": "1949, by George Orwell."}], "type": "consistency", "needs": {"facts": true, "calculation": true, "history": true}},
+  {"id": "h-fh03", "category": "follow_up_history", "question": "Now do the same for 5 hats at $12.50 each.", "history": [{"question": "Three shirts cost $24.99 each and tax is 8%. What is the total?", "answer": "**Answer: 80.97**"}], "type": "consistency", "needs": {"facts": false, "calculation": true, "history": true}},
+  {"id": "h-fh04", "category": "follow_up_history", "question": "Wait, didn't you say Bath before?", "history": [{"question": "Where was Jane Austen born?", "answer": "Steventon."}], "type": "consistency", "needs": {"facts": false, "calculation": false, "history": true}},
+  {"id": "h-fh05", "category": "follow_up_history", "question": "What about his brother?", "history": [{"question": "Who was Wilbur Wright?", "answer": "An aviation pioneer."}], "type": "consistency", "needs": {"facts": true, "calculation": false, "history": true}},
+
+  {"id": "h-fn01", "category": "follow_up_no_history", "question": "And when was it published?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}},
+  {"id": "h-fn02", "category": "follow_up_no_history", "question": "What about his brother?", "type": "factual", "needs": {"facts": true, "calculation": false, "history": false}}
+ ]
+}
