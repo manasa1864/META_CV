@@ -1318,8 +1318,19 @@ function PrismApp() {
   }, [])
 
   useEffect(() => {
-    document.title = view === 'chat' ? 'Prism · verified answers' : `Prism · ${view[0].toUpperCase()}${view.slice(1)}`
+    document.title = view === 'chat' ? 'Prism AI' : `Prism AI · ${view[0].toUpperCase()}${view.slice(1)}`
   }, [view])
+
+  // The intro is a full-window overlay: freeze the page behind it so there is no scrollbar and nothing to scroll.
+  useEffect(() => {
+    if (!intro) return
+    const root = document.documentElement
+    const previous = root.style.overflow
+    root.style.overflow = 'hidden'
+    return () => {
+      root.style.overflow = previous
+    }
+  }, [intro])
 
   function setView(next: View) {
     const path = PATHS[next] ?? '/'

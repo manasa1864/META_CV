@@ -166,7 +166,7 @@ sup { display:inline-grid; place-items:center; width:17px; height:17px; border-r
 .composer-compact .composer-bar { padding:0; }
 
 /* Intro: glass wave curls into Bloop */
-.intro { position:fixed; inset:0; z-index:100; overflow:hidden; background:linear-gradient(transparent 62%, rgba(255,236,246,.45) 82%, rgba(196,202,250,.5)), linear-gradient(100deg,#f7b0da,#dcb5ee 38%,#b9b2f0 70%,#a3acec); animation:introOut .8s 7.8s forwards; }
+.intro { position:fixed; inset:0; z-index:100; overflow:hidden; overscroll-behavior:contain; touch-action:none; background:linear-gradient(transparent 62%, rgba(255,236,246,.45) 82%, rgba(196,202,250,.5)), linear-gradient(100deg,#f7b0da,#dcb5ee 38%,#b9b2f0 70%,#a3acec); animation:introOut .8s 7.8s forwards; }
 .intro-brand { position:absolute; top:22px; left:32px; z-index:5; display:flex; align-items:center; gap:10px; color:var(--ink); }
 .skip { position:absolute; z-index:5; right:32px; top:26px; border:0; border-radius:99px; background:rgba(255,255,255,.7); padding:9px 16px; font-size:13px; font-weight:600; cursor:pointer; }
 .wave-photo { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; animation:photoAway 2.5s 3s cubic-bezier(.45,0,.25,1) both; }
