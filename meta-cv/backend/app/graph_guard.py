@@ -64,13 +64,15 @@ def problems(store, s: str, r: str, o: str) -> list[str]:
 
 
 def add_fact_checked(store, subject: str, relation: str, obj: str, source: str | None = None, *,
-                     added_by: str | None = None, batch_id: str | None = None, force: bool = False) -> dict:
+                     added_by: str | None = None, batch_id: str | None = None, force: bool = False,
+                     valid_from: str | None = None, valid_to: str | None = None) -> dict:
     r = rel_name(relation)
     issues = [] if force else problems(store, subject, r, obj)
     if issues:
         qid = _quarantine(normalize(subject), r, normalize(obj), source, "; ".join(issues))
         return {"status": "quarantined", "reason": "; ".join(issues), "quarantine_id": qid}
-    created = store.add_fact(subject, r, obj, source, added_by=added_by, batch_id=batch_id)
+    created = store.add_fact(subject, r, obj, source, added_by=added_by, batch_id=batch_id,
+                             valid_from=valid_from, valid_to=valid_to)
     state_cache.invalidate_triples([f"{normalize(subject)}|{r}|{normalize(obj)}"])
     return {"status": "accepted", "created": created}
 

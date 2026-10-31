@@ -5,6 +5,31 @@ Numbers here are measured. Anything that needs the real model, or a real AuraDB 
 
 ## 2026-11-01
 
+### Time-sensitive facts
+- **The gap:**
+  - The router flagged questions about the present (`time_sensitive`), but nothing acted on the flag.
+  - "Who is the CEO of X" could be answered from a fact of any age, at full confidence.
+  - Nothing could record that a fact had stopped being true.
+- **Validity periods:** facts can carry `valid_from` / `valid_to`.
+  - Stored by both graph stores (SQLite migration; Neo4j edge properties).
+  - Set through `/facts` and the write gate, and copied by the snapshot export.
+  - New store method `fact_info()` returns `verified_at`, the period and the source.
+- **Freshness review** (`engine/temporal.py`), for questions about the present:
+  - ended facts are dropped as not current;
+  - graph facts older than `FRESH_DAYS` (30) get an "as of" note;
+  - model-only claims get a "may be out of date" note;
+  - any note caps confidence at medium;
+  - such answers are not cached or reused as similar-question state.
+- **Every question:** a fact's period is shown with it, so an ended fact is never phrased as current.
+- **Faithfulness guard:** dates from notes are allowed in the answer, including in a different format.
+- **Tested** (`tests/test_temporal.py`, 5 tests; plus a store-contract test that dates round-trip):
+  - the former CEO is dropped and the current one kept;
+  - the ended fact is mentioned as ended without tripping the guard;
+  - a stale fact is flagged;
+  - a model-only claim is flagged;
+  - the answer is never served from cache.
+- **Not checked yet:** the Neo4j variant of the contract test (it runs when AuraDB credentials are set and `NEO4J_TESTS` is not 0).
+
 ### Graph-first answers in the factual tier
 - **The gap:** the model chose which facts to claim, and the graph only checked them, so an answer could be
   fully verified but incomplete. "Who are the characters in Pride and Prejudice?" could name two of the four

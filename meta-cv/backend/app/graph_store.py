@@ -91,28 +91,40 @@ class SqliteGraphStore:
 
     # facts -----------------------------------------------------------------
     def add_fact(self, subject: str, relation: str, obj: str, source: str | None = None, *,
-                 added_by: str | None = None, batch_id: str | None = None) -> bool:
-        """Idempotent. Returns True if the fact is new; re-adding only refreshes verified_at."""
+                 added_by: str | None = None, batch_id: str | None = None, valid_from: str | None = None,
+                 valid_to: str | None = None) -> bool:
+        """Idempotent. Returns True if the fact is new; re-adding refreshes verified_at (and validity, if given)."""
         return self.add_facts([{"subject": subject, "relation": relation, "object": obj, "source": source,
-                                "added_by": added_by, "batch_id": batch_id}]) == 1
+                                "added_by": added_by, "batch_id": batch_id, "valid_from": valid_from,
+                                "valid_to": valid_to}]) == 1
 
     def add_facts(self, rows: list[dict]) -> int:
         self._writable()
         now, new = time.time(), 0
         prepared = [(self.resolve(r["subject"]), rel_name(r["relation"]), self.resolve(r["object"]),
-                     r.get("source"), r.get("added_by"), r.get("batch_id")) for r in rows]
+                     r.get("source"), r.get("added_by"), r.get("batch_id"), r.get("valid_from") or None,
+                     r.get("valid_to") or None) for r in rows]
         with self._conn() as conn:
-            for s, rel, o, src, by, batch in prepared:
+            for s, rel, o, src, by, batch, vf, vt in prepared:
                 cur = conn.execute(
-                    "INSERT OR IGNORE INTO facts(subject, relation, object, source, verified_at, added_by, batch_id) "
-                    "VALUES (?,?,?,?,?,?,?)", (s, rel, o, src, now, by, batch))
+                    "INSERT OR IGNORE INTO facts(subject, relation, object, source, verified_at, added_by, batch_id, "
+                    "valid_from, valid_to) VALUES (?,?,?,?,?,?,?,?,?)", (s, rel, o, src, now, by, batch, vf, vt))
                 if cur.rowcount:
                     new += 1
                 else:
-                    conn.execute("UPDATE facts SET verified_at=? WHERE subject=? AND relation=? AND object=?",
-                                 (now, s, rel, o))
+                    conn.execute("UPDATE facts SET verified_at=?, valid_from=COALESCE(?, valid_from), "
+                                 "valid_to=COALESCE(?, valid_to) WHERE subject=? AND relation=? AND object=?",
+                                 (now, vf, vt, s, rel, o))
                 conn.execute("INSERT OR IGNORE INTO relations(name) VALUES (?)", (rel,))
         return new
+
+    def fact_info(self, subject: str, relation: str, obj: str) -> dict | None:
+        """Provenance and validity of one stored fact: verified_at (epoch seconds), valid_from, valid_to, source."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT verified_at, valid_from, valid_to, source FROM facts "
+                               "WHERE subject=? AND relation=? AND object=?",
+                               (self.resolve(subject), rel_name(relation), self.resolve(obj))).fetchone()
+        return dict(row) if row else None
 
     def delete_batch(self, batch_id: str) -> int:
         """Remove only the facts this batch created."""

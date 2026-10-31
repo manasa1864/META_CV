@@ -75,6 +75,7 @@ TRUSTED_SOURCES = {s.strip() for s in _env("TRUSTED_SOURCES", default="seed").sp
 
 CLAIM_TTL_HOURS = _num("CLAIM_TTL_HOURS", 24)                  # model-verified claims expire after this
 STALE_DAYS = _num("STALE_DAYS", 365)                           # audit flags facts not re-verified for longer
+FRESH_DAYS = _num("FRESH_DAYS", 30)                            # questions about the present: older facts get a date note
 STATE_MAX_ROWS = _int("STATE_MAX_ROWS", 5000)                  # cap on reasoning_states (least-hit pruned)
 STATE_CACHE_MAX_AGE_DAYS = _num("STATE_CACHE_MAX_AGE_DAYS", 30)
 TURNS_RETENTION_DAYS = _num("TURNS_RETENTION_DAYS", 0)         # 0 keeps every turn

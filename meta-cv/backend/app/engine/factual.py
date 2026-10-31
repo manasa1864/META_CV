@@ -16,7 +16,9 @@ An accepted node must also not clash with an earlier node of the answer or with 
 the conversation already established: same subject and a single-valued relation with a
 different object, or objects the graph marks incompatible_with / contradicts each other.
 Anything else is rejected or left unverified and kept out of the answer.
-Nodes that depend on a rejected node are skipped. The composed prose then passes the
+Nodes that depend on a rejected node are skipped. Accepted facts then pass the freshness review
+(temporal.py): a validity period travels with its fact, and for a question about the present an ended fact
+is dropped and an old or model-only one is kept with a date note. The composed prose then passes the
 faithfulness guard (guardrails.py) before it is returned.
 """
 import difflib
@@ -26,7 +28,7 @@ import time
 from .. import config, llm, state_cache
 from ..db import connect
 from ..graph_common import EXCLUSIVE_RELATIONS
-from . import compression, decompose, guardrails
+from . import compression, decompose, guardrails, temporal
 from .router import caught
 from .trace import Trace
 
@@ -53,6 +55,9 @@ COMPOSE_SYSTEM = """Write the answer to the question using ONLY the verified fac
 Do not add any other fact, name, date, number or detail, even if you believe it is true.
 If the verified facts do not fully answer the question, say briefly what could not be verified.
 If corrections to earlier answers are listed, point them out.
+A fact may carry a time note in brackets: keep it with the fact ("as of ...", "since ...", "until ..."), and
+never present a fact as current beyond what its note says. Facts listed as no longer current must not be
+presented as current; you may say they ended.
 Plain prose, concise."""
 
 COMPOSE_STRICT = COMPOSE_SYSTEM + """
@@ -269,7 +274,7 @@ def _caught_by_checks(checked: list[dict]) -> list[dict]:
 
 
 def walk(store, question: str, entities: list[str], trace: Trace, prior: dict | None = None,
-         earlier: list[dict] | None = None, verified_only: bool = False):
+         earlier: list[dict] | None = None, verified_only: bool = False, time_sensitive: bool = False):
     """Generator: draft the claim path and verify it node by node. Returns (checked, found)."""
     earlier = earlier or []
     ev = trace.start("graph", "Looking up known facts in the knowledge graph",
@@ -307,7 +312,7 @@ def walk(store, question: str, entities: list[str], trace: Trace, prior: dict | 
         yield trace.note("graph", "Every part answered from the graph",
                          f"{len(answered)} stored fact(s) answer all {len(parts)} part(s) - nothing was left to the model, "
                          "so there is no draft to check.", "ok")
-        return answered, _caught_by_checks(answered)
+        return (yield from _finish(store, parts, answered, [], [], time_sensitive, trace))
     focus = decompose.focus_text(parts, open_parts, answered) if parts else None
 
     all_relations = store.relation_names()
@@ -335,14 +340,22 @@ def walk(store, question: str, entities: list[str], trace: Trace, prior: dict | 
                          "names were shown; every claim that relies on the cut ones was verified against the full graph.",
                          "ok")
 
+    return (yield from _finish(store, parts, answered, checked, found, time_sensitive, trace))
+
+
+def _finish(store, parts: list[dict], answered: list[dict], drafted: list[dict], found: list[dict],
+            time_sensitive: bool, trace: Trace):
+    """Generator: merge graph answers with the verified draft, review them for currency, then report every part
+    left without a verified answer. Returns (checked, found)."""
     merged, seen = list(answered), {triple(a) for a in answered}
-    for c in checked:  # a drafted claim the graph corrected can land on a graph answer: keep each fact once
+    for c in drafted:  # a drafted claim the graph corrected can land on a graph answer: keep each fact once
         if c.get("dup") or (c["status"] == "accepted" and triple(c) in seen):
             continue
         if c["status"] == "accepted":
             seen.add(triple(c))
         merged.append(c)
-    checked = merged
+    checked, stale = yield from temporal.review(store, merged, time_sensitive, trace)
+    found = found + stale
     if parts:
         missing_parts = decompose.gaps(parts, checked)
         if missing_parts:
@@ -439,38 +452,47 @@ def answer_from_state(store, question: str, prior: dict, trace: Trace):
 
 
 def answer(store, question: str, entities: list[str], trace: Trace, prior: dict | None = None,
-           earlier: list[dict] | None = None, verified_only: bool = False):
+           earlier: list[dict] | None = None, verified_only: bool = False, time_sensitive: bool = False):
     """Generator: yields trace events, returns the tier result.
 
     prior: a similar question's verified state (states.find); earlier: claims this conversation established.
+    time_sensitive: the question asks about the present, so facts must still be current (temporal.py).
     """
-    if compression.similar_enough(prior) and not verified_only:
+    if compression.similar_enough(prior) and not verified_only and not time_sensitive:
         reused = yield from answer_from_state(store, question, prior, trace)
         if reused:
             return reused
-    checked, found = yield from walk(store, question, entities, trace, prior, earlier, verified_only)
+    checked, found = yield from walk(store, question, entities, trace, prior, earlier, verified_only, time_sensitive)
     accepted = [c for c in checked if c["status"] == "accepted"]
-    missing = [c for c in checked if c["status"] != "accepted"]
+    ended = [c for c in checked if c.get("ended")]
+    missing = [c for c in checked if c["status"] != "accepted" and not c.get("ended")]
 
     ev = trace.start("compose", "Writing the answer from verified nodes only",
                      f"{len(accepted)} verified, {len(missing)} left out")
     yield ev
     if accepted:
-        facts = "\n".join(f"- {c['subject']} {c['relation'].replace('_', ' ')} {c['object']}" for c in accepted)
+        facts = "\n".join(f"- {c['subject']} {c['relation'].replace('_', ' ')} {c['object']}"
+                          + (f" ({c['time_note']})" if c.get("time_note") else "") for c in accepted)
         gaps = "\n".join(f"- {c.get('part_text') or c['subject'] + ' ' + c['relation'].replace('_', ' ') + ' ?'}"
                          for c in missing) or "(none)"
         fixes = "\n".join(f"- earlier: {_fmt(c['corrects'])}; now verified: {_fmt(c)}" for c in accepted if c.get("corrects"))
+        past = "\n".join(f"- {c['subject']} {c['relation'].replace('_', ' ')} {c['object']} ({c['time_note']})"
+                         for c in ended)
         prompt = (f"Question: {question}\n\nVerified facts:\n{facts}\n\nCould not verify:\n{gaps}"
+                  + (f"\n\nNo longer current:\n{past}" if past else "")
                   + (f"\n\nCorrections to earlier answers:\n{fixes}" if fixes else ""))
         text = llm.chat_text(COMPOSE_SYSTEM, prompt)
         yield trace.settle(ev, "ok")
-        text = yield from guardrails.guard_factual(question, text, accepted, missing, prompt, COMPOSE_STRICT, trace, found)
+        text = yield from guardrails.guard_factual(question, text, accepted, missing + ended, prompt, COMPOSE_STRICT,
+                                                   trace, found)
     else:
         text = "I couldn't verify any facts to answer this, so I'd rather not guess."
         yield trace.settle(ev, "warn", "Nothing verified - declining to answer")
 
     graph_share = sum(c["source"] in ("graph", "graph-corrected") for c in accepted) / max(len(accepted), 1)
     confidence = "high" if accepted and not missing and graph_share >= 0.5 else "medium" if accepted else "low"
+    if confidence == "high" and any(c.get("stale") for c in accepted):
+        confidence = "medium"  # true as of an older check, or only as far as the model knows
     return {
         "tier": "factual",
         "answer": text.strip(),
@@ -478,6 +500,6 @@ def answer(store, question: str, entities: list[str], trace: Trace, prior: dict 
         "path": checked,
         "caught": found,
         "withheld": sum(c["status"] == "unverified" for c in checked),
-        "cacheable": bool(accepted) and not missing,
+        "cacheable": bool(accepted) and not missing and not time_sensitive,
         "stopped": None if accepted else {"reason": "nothing_verified", "detail": "no claim passed verification"},
     }

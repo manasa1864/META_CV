@@ -162,6 +162,9 @@ class Fact(BaseModel):
     relation: str = Field(min_length=1, max_length=64)
     object: str = Field(min_length=1, max_length=300)
     source: str | None = Field(default=None, max_length=300)  # where the fact came from (document, URL, ...)
+    # For facts that change over time: when it became / stopped being true (YYYY, YYYY-MM or YYYY-MM-DD).
+    valid_from: str | None = Field(default=None, pattern=r"^\d{4}(-\d{2}){0,2}$")
+    valid_to: str | None = Field(default=None, pattern=r"^\d{4}(-\d{2}){0,2}$")
 
 
 class RelationDef(BaseModel):
@@ -191,7 +194,8 @@ def define_relation(r: RelationDef):
 @app.post("/facts", dependencies=[Depends(require_admin)])
 def add_fact(f: Fact):
     """Through the write gate: accepted, or quarantined with the reason."""
-    return graph_guard.add_fact_checked(store, f.subject, f.relation, f.object, f.source, added_by="api")
+    return graph_guard.add_fact_checked(store, f.subject, f.relation, f.object, f.source, added_by="api",
+                                        valid_from=f.valid_from, valid_to=f.valid_to)
 
 
 @app.post("/aliases", dependencies=[Depends(require_admin)])

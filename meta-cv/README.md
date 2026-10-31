@@ -84,7 +84,7 @@ Risk codes are adapted from the factuality / faithfulness split in Huang et al.,
 | `faithful.logic` | bad arithmetic or inference | reasoning |
 | `faithful.premise` | calculation on an unverified fact | planner + reasoning |
 | `faithful.context` | contradicts earlier turns | consistency |
-| `temporal.stale` | may have changed since verified | factual + audit |
+| `temporal.stale` | may have changed since verified | factual (freshness review) + audit |
 
 ### Stop conditions
 
@@ -96,6 +96,36 @@ The system answers "I can't answer this reliably" (and says why) when:
 5. **budget:** the per-question budget (LLM calls, tokens, graph queries) ran out.
 
 A global breaker switches to **verified-only mode** when recent answers are mostly rejections, or when the model or graph keep failing. In that mode only graph facts count, and a banner says so.
+
+### Time-sensitive facts
+
+Facts that change (offices, CEOs, records) can carry a validity period: `valid_from` / `valid_to` as `YYYY`,
+`YYYY-MM` or `YYYY-MM-DD`, where an empty `valid_to` means still true. Set them through `/facts`, the write
+gate or `store.add_fact(..., valid_from=, valid_to=)`. Both stores keep them, and `export_snapshot` copies them.
+
+Every accepted graph fact with a period carries it into the answer ("from 2015 until 2021"), so an ended
+fact is never phrased as current.
+
+When the router marks a question time-sensitive ("current", "latest", "now"), `engine/temporal.py` reviews
+every accepted fact before the answer is written:
+
+| fact | what happens |
+|---|---|
+| graph fact whose `valid_to` has passed | dropped as not current (`temporal.stale`, dropped). The answer may say it ended, never that it holds |
+| graph fact not re-verified within `FRESH_DAYS` (default 30) | kept with "as of <date>"; confidence at most medium |
+| claim confirmed only by the model | kept with "from model knowledge, which may be out of date"; confidence at most medium |
+| current graph fact verified recently | used normally |
+
+Two kinds of reuse are skipped for time-sensitive questions, because the answer may have changed since:
+- the answer is not cached for exact repeats;
+- answers from similar questions are not reused.
+
+Limits:
+- **Periods are only as good as the data:** a fact stored without `valid_to` counts as still true.
+- **No automatic dates:** ingest does not yet extract periods from text.
+- **The seed has no time-varying facts.**
+- **No point-in-time questions:** "who was CEO in 2015" is answered from the periods in the text, not by
+  filtering on the date.
 
 ### Graph-first answers
 

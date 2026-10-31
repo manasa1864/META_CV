@@ -94,3 +94,18 @@ def test_delete_batch_removes_only_that_batch(store):
     assert store.delete_batch("drop") == 1
     assert store.validate("a", "likes", "b")["verdict"] == "supported"
     assert store.validate("c", "likes", "d")["verdict"] == "unknown"
+
+
+def test_validity_periods_round_trip(store):
+    import time
+
+    before = time.time() - 5
+    store.add_fact("alice", "ceo_of", "acme corp", "filing", valid_from="2015", valid_to="2021-06")
+    store.add_fact("bob", "ceo_of", "acme corp", "filing", valid_from="2021-06")
+    info = store.fact_info("Alice", "ceo_of", "Acme Corp")
+    assert (info["valid_from"], info["valid_to"], info["source"]) == ("2015", "2021-06", "filing")
+    assert info["verified_at"] >= before
+    assert store.fact_info("bob", "ceo_of", "acme corp")["valid_to"] is None
+    store.add_fact("alice", "ceo_of", "acme corp", "filing")              # re-adding without dates keeps them
+    assert store.fact_info("alice", "ceo_of", "acme corp")["valid_to"] == "2021-06"
+    assert store.fact_info("carol", "ceo_of", "acme corp") is None

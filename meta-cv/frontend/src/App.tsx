@@ -92,6 +92,7 @@ const STAGES: Record<string, string> = {
   compression: 'Reusing verified work',
   planner: 'Facts first, then the calculation',
   guard: 'Faithfulness check',
+  temporal: 'Is it still current?',
   audit: 'Graph health',
   health: 'Verified-only mode',
   budget: 'Budget',

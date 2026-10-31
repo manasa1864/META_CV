@@ -64,7 +64,12 @@ def _claim_matches(c: dict, t: dict) -> bool:
 
 
 def factual_problems(question: str, text: str, accepted: list[dict], missing: list[dict]) -> list[str]:
-    allowed = _blob(question, *(f"{c['subject']} {c['relation'].replace('_', ' ')} {c['object']}" for c in accepted),
+    # Facts that ended are verified history: the answer may mention them (as ended), with their dates.
+    accepted = list(accepted) + [c for c in missing if c.get("ended")]
+    missing = [c for c in missing if not c.get("ended")]
+    # a date note like "2021-06" may come back as "2021-06", or as "June 2021" (year and month separately)
+    allowed = _blob(question, *(f"{c['subject']} {c['relation'].replace('_', ' ')} {c['object']} {c.get('time_note', '')} "
+                                f"{c.get('time_note', '').replace('-', ' ')}" for c in accepted),
                     *(f"{c['subject']} {c['relation'].replace('_', ' ')}" for c in missing),
                     *(f"{c['corrects']['subject']} {c['corrects']['object']}" for c in accepted if c.get("corrects")))
     problems = [f"'{t}' is not in the verified facts" for t in unsupported_terms(text, allowed)]
@@ -80,7 +85,13 @@ def factual_problems(question: str, text: str, accepted: list[dict], missing: li
 
 
 def render_verified(accepted: list[dict], missing: list[dict]) -> str:
-    lines = ["Verified: " + "; ".join(f"{c['subject']} {c['relation'].replace('_', ' ')} {c['object']}" for c in accepted) + "."]
+    lines = ["Verified: " + "; ".join(f"{c['subject']} {c['relation'].replace('_', ' ')} {c['object']}"
+                                      + (f" ({c['time_note']})" if c.get("time_note") else "") for c in accepted) + "."]
+    ended = [c for c in missing if c.get("ended")]
+    missing = [c for c in missing if not c.get("ended")]
+    if ended:
+        lines.append("No longer current: " + "; ".join(f"{c['subject']} {c['relation'].replace('_', ' ')} {c['object']} "
+                                                       f"({c['time_note']})" for c in ended) + ".")
     if missing:
         lines.append("Could not verify: " + "; ".join(f"{c['subject']} {c['relation'].replace('_', ' ')}" for c in missing) + ".")
     return "\n".join(lines)
