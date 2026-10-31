@@ -1,127 +1,132 @@
 # META CV
 
-An adaptive chatbot that prevents hallucinations by design. Every question is classified by the
-hallucination it is most at risk of, routed to the tier built to prevent that type, checked
-before it is said, and logged so the router learns which tier actually works. The UI streams
-each step live ("See the thinking"), says when processing is complete, then gives the answer.
-
-- **Factual** risk → graph tier: claims are checked one by one against the knowledge graph, so a wrong fact stops the chain instead of spreading.
-- **Reasoning** risk → reasoning tier: arithmetic is machine-checked, logic is checked independently, contradictions trigger backtracking, and independent solutions must agree (conservative / balanced / aggressive).
-- **Consistency** risk → consistency tier: follow-ups are answered from what the conversation already verified, and new claims that contradict earlier turns are dropped.
-- **Learned routing**: each tier's track record per risk type (benchmark grades, your Yes/No feedback, or whether the answer came out fully verified) decides which tier is used next.
-- **Reasoning reuse**: exact repeats reuse a re-validated verified path; similar questions get a verified state (triples or checked steps) injected to adapt instead of rebuilding.
-- **Metrics tab**: hallucinations caught by type, tokens per question, router state, and benchmark results.
+An adaptive chatbot that tries to prevent hallucinations by design.
+- **Risk profile:** each question gets a profile of the hallucinations it is at risk of.
+- **Routing:** it goes to the tier that can verify those risks.
+- **Checking:** nothing is said until it has been checked, and the system stops instead of guessing when it cannot verify.
+- **Learning:** every outcome is logged, so the router learns which tier works.
+- **Live trace:** the UI (Prism, with Bloop) streams every check ("See the thinking"), then the answer and its evidence.
 
 ```
-META/                       (the repository root)
+META/                        (the repository root)
 └── meta-cv/
-    ├── backend/            FastAPI app (graph store, verification engine, LLM client, benchmark, tests)
-    ├── frontend/           React + Vite chat UI and metrics dashboard
-    └── demo_server.py      backend with a scripted stand-in for the LLM (no API key needed)
+    ├── backend/             FastAPI app: graph stores, verification engine, LLM client, tools, tests
+    ├── frontend/            React + Vite UI: chat, metrics, results page
+    ├── bench_data/          benchmark and taxonomy question sets (JSON)
+    ├── results/             measured benchmark / scale / taxonomy results (committed)
+    ├── replays/             recorded real runs for Replay mode (committed)
+    ├── data/                deployment files: graph snapshot, initial state (generated, see docs/DEPLOY.md)
+    ├── docs/DEPLOY.md       deployment for judges
+    ├── Dockerfile           one container: frontend at /, API under /api
+    └── demo_server.py       the pipeline with a scripted stand-in model, labelled "Scripted demo (no model)"
 ```
 
-All commands below are run from the `meta-cv` folder.
+All commands run from `meta-cv/backend` unless noted.
 
-## Requirements
-
-Python 3.12+ and Node.js 20+.
-
-## Backend
+## Run it
 
 ```powershell
-cd backend
-python -m venv .venv
-.venv\Scripts\activate
+python -m venv .venv; .venv\Scripts\activate
 pip install -r requirements.txt
-copy .env.example .env          # then fill in .env (see below)
-python -m app.seed              # optional: loads a small starter graph
+copy .env.example .env               # fill in AuraDB + META_* (or keep a copy in ~/.meta_cv/.env)
+python -m app.seed                   # idempotent starter graph, through the write gate
 uvicorn app.main:app --port 8000 --reload
+# in frontend/:  npm install; npm run dev   -> http://localhost:5173
 ```
 
-Check it is up: <http://localhost:8000/health> and the API docs at <http://localhost:8000/docs>.
+### Production graph: Neo4j AuraDB
 
-### Configuration (`backend/.env`)
+Set `GRAPH_BACKEND=neo4j` and the `NEO4J_*` values from the Aura credentials file.
+- **On startup:** the app creates unique-name constraints, which also act as the lookup index.
+- **Connections:** it keeps one shared driver, with query timeouts and bounded retry.
+- **If Aura is unreachable** (paused, network): it answers read-only from `data/graph_snapshot.db` and says so ("running on a local snapshot").
+- **Other state:** everything that is not the fact graph (turns, router outcomes, caches, review queue, quarantine) lives in SQLite at `DB_PATH`, in WAL mode with a busy timeout.
 
-`.env` holds secrets and is gitignored, so it never comes with a clone. The backend also reads
-`~/.meta_cv/.env` (outside the repo): keep a copy there and every clone on that machine works
-without re-entering values. `backend/.env` wins where both set a key; set `META_ENV_FILE` to use
-another file.
+SQLite is also a full graph backend (`GRAPH_BACKEND=sqlite`), used for tests and offline development. `tests/test_store_contract.py` runs the same assertions against both stores. Its AuraDB variant runs only when credentials are present, inside private labels it deletes afterwards.
 
-| Setting | Meaning |
-|---|---|
-| `GRAPH_BACKEND` | `sqlite` (no setup, good for trying it out) or `neo4j` (AuraDB) |
-| `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD` | From the credentials file Aura gives you when you create an instance |
-| `META_API_KEY`, `META_BASE_URL`, `META_MODEL` | Meta API (OpenAI-compatible) |
-| `RULE_AUTO_THRESHOLD` | Leave empty so every LLM-proposed rule needs your approval |
-| `MIN_TRIPLE_CONFIDENCE` | Extracted facts below this go to the review queue |
-
-## Frontend
-
-```powershell
-cd frontend
-npm install
-npm run dev
-```
-
-Open the URL Vite prints (usually <http://localhost:5173>). Requests to `/api/...` are proxied to the backend on port 8000, so start the backend first.
-
-## Try it without any API key
-
-`demo_server.py` runs the real pipeline on a seeded SQLite graph with a scripted stand-in for the model. Run it with the backend's virtualenv, then start the frontend as above.
-
-```powershell
-backend\.venv\Scripts\python demo_server.py
-```
-
-## Tests and benchmark
-
-```powershell
-cd backend
-python -m pytest
-python -m app.bench --limit 5   # quick check: real LLM calls
-python -m app.bench --train     # all 56 questions + routing-accuracy curve; fills the Metrics tab
-```
-
-The benchmark compares a plain LLM with this system on 56 graded questions across the three
-risk types. Each answer is *correct*, *abstained* (declined or said it could not verify) or
-*hallucinated* (answered wrongly). The factual questions assume the seed graph is loaded.
-
-## How a question flows
+## How a question is answered
 
 ```
 question (+ conversation)
-  -> exact-repeat cache (re-validated before reuse)                    engine/cache.py
-  -> classify risk: factual | reasoning | consistency                   engine/router.py
-  -> learned router picks the tier with the best track record           engine/router.py
-  -> similar verified state injected                                    engine/states.py
-  -> tier: factual (graph) | reasoning | consistency                    engine/factual.py, reasoning.py, memory.py
-  -> conflict checks: single-valued relations, graph incompatible_with /
-     contradicts edges, earlier turns of the conversation
-  -> answer + metadata: risk type, tier, hallucinations caught, tokens, router scores
-  -> turn logged; the outcome trains the router                         engine/pipeline.py
+  -> exact-repeat cache (re-validated)                                       engine/cache.py
+  -> risk profile: weighted risk codes, needs {facts, calculation, history},
+     false-premise and time-sensitive flags; keyword fallback if the model fails  engine/router.py
+  -> learned router picks the tier                                           engine/router.py
+  -> refuse if the last audit found a conflict about these entities           audit.py
+  -> tier
+       factual      claims verified node by node: graph, then judge + blind probe     engine/factual.py
+       reasoning    arithmetic machine-checked, logic checked, backtracking,
+                    independent solutions must agree                                  engine/reasoning.py
+       consistency  from what the conversation verified; derived numbers must
+                    pass the arithmetic check, or it re-asks a standalone question    engine/memory.py
+       mixed        facts first, then the calculation from those verified premises   engine/planner.py
+  -> faithfulness guard: names, numbers and claims in the answer must come
+     from verified facts; regenerate once, else print the verified facts verbatim     engine/guardrails.py
+  -> stop conditions, answer, and a `final` event with risks, caught, stopped,
+     degraded, tokens and router scores                                               engine/pipeline.py
 ```
 
-| Piece | Where | Notes |
+### Taxonomy
+
+Risk codes are adapted from the factuality / faithfulness split in Huang et al., *A Survey on Hallucination in Large Language Models* (arXiv:2311.05232). They are restricted to what this system can check. `COVERS` in `engine/router.py` states which tier verifies which code.
+
+| code | meaning | verified by |
 |---|---|---|
-| Hallucination taxonomy | `engine/router.py` `classify` | LLM classifier with a keyword fallback |
-| Learned routing | `engine/router.py` `choose` | per (risk type, tier) success rate; a prior favours the specialist; small token penalty |
-| Intermediate compression | `engine/states.py` | verified triples / checked steps, zlib-compressed JSON, lexical similarity |
-| Conversation consistency | `engine/memory.py` | per-turn commitments, follow-up answering, standalone rewrite |
-| Graph validation | `neo4j_store.py` (AuraDB), `graph_store.py` (SQLite) | functional + transitive rules, `incompatible_with` / `contradicts` edges |
-| Metrics | `metrics.py`, `GET /metrics`, frontend Metrics tab | live turns + latest benchmark |
-| Benchmark | `bench.py` | 56 graded questions; baseline vs system; `--train` adds the routing-accuracy curve |
+| `factual.entity_error` | wrong entity, date or number | factual |
+| `factual.relation_error` | right entities, wrong relation | factual |
+| `factual.fabrication` | unverifiable invented detail | factual + guard |
+| `factual.overclaim` | false premise, certainty beyond evidence | factual |
+| `faithful.logic` | bad arithmetic or inference | reasoning |
+| `faithful.premise` | calculation on an unverified fact | planner + reasoning |
+| `faithful.context` | contradicts earlier turns | consistency |
+| `temporal.stale` | may have changed since verified | factual + audit |
 
-The dashboard shows measured numbers only.
+### Stop conditions
 
-## Main endpoints
+The system answers "I can't answer this reliably" (and says why) when:
+1. **nothing verified:** no claim passed verification;
+2. **graph conflict:** the last audit found an error-level conflict about the question's entities;
+3. **false premise:** the question's premise is contradicted by the graph;
+4. **unverified premise:** a calculation needs a premise that could not be verified;
+5. **budget:** the per-question budget (LLM calls, tokens, graph queries) ran out.
 
-| Endpoint | Purpose |
+A global breaker switches to **verified-only mode** when recent answers are mostly rejections, or when the model or graph keep failing. In that mode only graph facts count, and a banner says so.
+
+### Router learning
+
+Score = P(correct) − λ·P(hallucinated) − c·P(abstained), blended with a prior that favours the specialist tier.
+- **Weighting:** outcomes count by signal quality. Benchmark ground truth and user feedback count; the system's own confidence is excluded by default because it is circular.
+- **Freezing:** `ROUTER_FROZEN=1` (implied by `JUDGE_MODE=1`) reads the trained state but never changes it.
+
+## Tools
+
+| command | what it does |
 |---|---|
-| `POST /chat/stream` | Ask a question (with `conversation_id`); streams the thinking steps, then the answer |
-| `POST /chat` | Same, returned as one response |
-| `POST /feedback` | Mark an answer right or wrong; the router learns from it |
-| `GET /metrics` | Dashboard numbers: live turns, router state, latest benchmark |
-| `POST /ingest` | Extract facts from text into the graph (needs the Meta API) |
-| `POST /validate` | Check one claim: supported, contradicted or unknown |
-| `GET /rules/pending`, `POST /rules/{relation}/approve` | Review rules the LLM proposed |
-| `GET /review`, `POST /review/{id}/accept` | Review facts that were held back |
+| `python -m pytest` | all tests (AuraDB variants run when credentials exist; `NEO4J_TESTS=0` skips them) |
+| `python -m app.audit [--fail-on error]` | graph audit: functional violations, incompatible pairs, cycles, near-duplicates, provenance, staleness, relation drift, dangling caches |
+| `python -m app.recheck` | re-validate cached paths and reasoning states; drop expired claims; prune old state |
+| `python -m app.bench --load-synthetic` | load the fictional benchmark knowledge base (`--unload-synthetic` removes it) |
+| `python -m app.bench [--ablate full,no_graph,...] [--repeats 3] [--train]` | benchmark with Wilson intervals, ablations and router train/test split; writes `results/` |
+| `python -m app.bench --report` | methodology, tables and caveats of the latest run |
+| `python -m app.bench_taxonomy [--fallback-only]` | confusion matrix of the classifier on 123 labelled questions |
+| `python -m app.scale --backend neo4j --sizes 1000,10000,...` | AuraDB scale test (tagged, cleaned up, refuses to touch other data) |
+| `python -m app.loadtest` | 20 concurrent conversations with a scripted model; no lock errors allowed |
+| `python -m app.export_snapshot` | read-only SQLite copy of the Aura graph for the fallback |
+| `python -m app.record_replays` | record real runs of the example questions for Replay mode |
+| `python -m app.preflight [--seed] [--url https://...]` | pre-demo PASS/FAIL checks |
+| `npx playwright test` (in `frontend/`) | browser smoke test against the scripted demo |
+
+Deployment, judge mode and the AuraDB pausing plan are in [docs/DEPLOY.md](docs/DEPLOY.md).
+
+## Limitations
+
+- **Similarity reuse is lexical:** content-word overlap, not embeddings. Paraphrases with different wording are not matched.
+- **Factual answers depend on graph coverage:** outside the graph, a claim is accepted only if an independent model check and a blind probe agree. That is a model judging a model, so it is weaker than the graph.
+- **The benchmark measures what it was built to measure:**
+  - the synthetic set is invented;
+  - the familiar set's facts are in the seed graph;
+  - real-world long-tail items still need to be written with sources (`bench_data/real_world_TODO.json`);
+  - keyword grading can miss a fabricated detail that avoids every forbidden term.
+- **The keyword fallback is crude** (85% on the taxonomy set). It is only used when the model's classification fails.
+- **AuraDB Free pauses when idle and has node and relationship caps.** The snapshot fallback is read-only and only as fresh as its last export.
+- **Learning state is local:** router outcomes and feedback live in one SQLite file. Without a persistent disk they reset on restart (see docs/DEPLOY.md).
