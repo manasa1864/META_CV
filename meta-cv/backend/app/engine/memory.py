@@ -12,7 +12,7 @@ import json
 
 from .. import llm
 from ..db import connect
-from . import factual, guardrails
+from . import compression, factual, guardrails
 from .router import looks_computational
 from .trace import Trace
 
@@ -37,7 +37,14 @@ def history(conversation_id: str | None, limit: int = HISTORY_TURNS) -> list[dic
 
 
 def history_text(hist: list[dict]) -> str:
-    return "\n".join(f"Q{i}: {t['question']}\nA{i}: {t['answer'][:400]}" for i, t in enumerate(hist, 1))
+    """The conversation for prompts. Compressed: the last few turns with short answers - the verified
+    statements themselves travel separately, so long answer prose adds tokens without adding facts."""
+    if compression.enabled():
+        hist = hist[-compression.HISTORY_TURNS:]
+        size = compression.HISTORY_ANSWER_CHARS
+    else:
+        size = 400
+    return "\n".join(f"Q{i}: {t['question']}\nA{i}: {t['answer'][:size]}" for i, t in enumerate(hist, 1))
 
 
 def commitments_of(question: str, result: dict) -> list[dict]:

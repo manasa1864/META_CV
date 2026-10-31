@@ -89,6 +89,13 @@ const STAGES: Record<string, string> = {
   factual: 'Factual verification',
   reasoning: 'Reasoning checks',
   compose: 'Composing',
+  compression: 'Reusing verified work',
+  planner: 'Facts first, then the calculation',
+  guard: 'Faithfulness check',
+  audit: 'Graph health',
+  health: 'Verified-only mode',
+  budget: 'Budget',
+  ablation: 'Ablation',
 }
 
 const STEP_GAP_MS = 220 // reveal new thinking steps one by one
@@ -649,9 +656,10 @@ function Intro({ onSkip }: { onSkip: () => void }) {
 
 const EXAMPLE_STYLE: Record<string, { icon: IconName; tone: string }> = {
   'false-premise': { icon: 'search', tone: 'coral' },
-  'fact-check': { icon: 'check', tone: 'mint' },
-  calculation: { icon: 'bulb', tone: 'sun' },
-  mixed: { icon: 'scale', tone: 'sky' },
+  'multi-fact': { icon: 'check', tone: 'mint' },
+  comparison: { icon: 'scale', tone: 'sky' },
+  mixed: { icon: 'bulb', tone: 'sun' },
+  reuse: { icon: 'link', tone: 'lav' },
   'follow-up': { icon: 'replay', tone: 'lav' },
 }
 
@@ -659,12 +667,12 @@ const EXAMPLE_STYLE: Record<string, { icon: IconName; tone: string }> = {
 const FALLBACK_EXAMPLES: Example[] = [
   { id: 'false-premise', label: 'False premise', tier: 'factual', replay: false,
     turns: ['Why did Albert Einstein win the Nobel Prize in 1905?'] },
-  { id: 'fact-check', label: 'Facts checked against the graph', tier: 'factual', replay: false,
-    turns: ['Who wrote Pride and Prejudice, and where was the author born?'] },
-  { id: 'calculation', label: 'Checked calculation', tier: 'reasoning', replay: false,
-    turns: ['A shop has 12 boxes with 7 apples each. 4 apples are eaten. How many apples are left?'] },
+  { id: 'multi-fact', label: 'Several facts at once', tier: 'factual', replay: false,
+    turns: ['Who wrote Pride and Prejudice, when was it published, and where was the author born?'] },
+  { id: 'mixed', label: 'Facts, then a calculation', tier: 'reasoning', replay: false,
+    turns: ['How old was Harper Lee when To Kill a Mockingbird was published?'] },
   { id: 'follow-up', label: 'Follow-up question', tier: 'consistency', replay: false,
-    turns: ['Who wrote 1984?', 'Where was he born?'] },
+    turns: ['Who wrote 1984?', 'How many years after his birth was it published?'] },
 ]
 
 /** Live, replay or unavailable: decides what an example chip does. */
@@ -911,18 +919,23 @@ function Verification({ final }: { final: Final }) {
   }
   const high = final.confidence === 'high'
   const title = high ? 'Backed by the checks' : final.confidence === 'medium' ? 'Partly verified' : 'Could not fully verify'
+  const reuse = final.compression?.mode
   const extra = final.from_cache
     ? ` Reused a verified path — ${final.tokens.saved.toLocaleString()} tokens saved.`
-    : final.reused_state
-      ? ' Adapted a similar verified answer.'
-      : ''
+    : reuse === 'state_answer'
+      ? 'Answered from facts verified for a similar question, re-checked against the graph and the faithfulness check.'
+      : reuse === 'template'
+        ? 'Adapted a verified solution to a similar problem; the adaptation was machine-checked and logic-checked, and the independent cross-check was skipped.'
+        : final.reused_state
+          ? ' Adapted a similar verified answer.'
+          : ''
   return (
     <div className={`verification ${high ? '' : 'verification-uncertain'}`}>
       <span className="status-icon">{high ? <Icon name="check" /> : '?'}</span>
       <div>
         <b>{title}</b>
         <p>
-          {TIER_LINE[final.tier] ?? ''}
+          {reuse === 'template' || reuse === 'state_answer' ? '' : TIER_LINE[final.tier] ?? ''}
           {extra}
         </p>
       </div>
@@ -1413,10 +1426,16 @@ function PrismApp() {
       if (ex.replay) await playReplay(ex)
       return
     }
-    const conv = newConversationId()
+    let conv = newConversationId()
     setMessages([])
     setConversationId(conv)
-    for (const q of ex.turns) await ask(q, conv)
+    for (const [i, q] of ex.turns.entries()) {
+      if (ex.separate && i > 0) {
+        conv = newConversationId()
+        setConversationId(conv)
+      }
+      await ask(q, conv)
+    }
   }
 
   async function rate(id: number, turnId: number, helpful: boolean) {

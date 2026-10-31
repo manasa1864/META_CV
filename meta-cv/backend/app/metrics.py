@@ -47,7 +47,7 @@ def summary() -> dict:
     with connect() as conn:
         rows = [dict(r) for r in conn.execute(
             "SELECT id, hallucination_type, tier, from_cache, reused_state, caught, prompt_tokens, completion_tokens, "
-            "saved_tokens, source, outcome, signal_quality, correct, feedback, confidence, stopped FROM turns "
+            "saved_tokens, source, outcome, signal_quality, correct, feedback, confidence, stopped, reuse_kind FROM turns "
             "WHERE source NOT IN ('scale', 'loadtest', 'replay') ORDER BY id"
         )]
     for r in rows:
@@ -85,6 +85,12 @@ def summary() -> dict:
                          "rolling_success": _avg(w["success"] for w in win),
                          "rolling_tokens": _avg(w["tokens"] for w in win)})
 
+    by_reuse = []
+    for kind in ("none", "exact_repeat", "state_answer", "template", "similar_state"):
+        rs = [r for r in rows if (r["reuse_kind"] or "none") == kind]
+        by_reuse.append({"kind": kind, "turns": len(rs), "avg_tokens": _avg(r["tokens"] for r in rs),
+                         "verified_rate": _avg(r["success"] for r in rs)})
+
     outcomes = Counter(r["result"] or "unknown" for r in rows)
     signals = Counter(r["signal"] or "none" for r in rows)
     stops = Counter(json.loads(r["stopped"])["reason"] for r in rows if r["stopped"])
@@ -107,6 +113,7 @@ def summary() -> dict:
         "caught_by_type": list(by_family.values()),
         "caught_by_risk": [{"risk": k, "label": router.RISKS.get(k, k), "count": v} for k, v in by_risk.most_common()],
         "by_tier": by_tier,
+        "by_reuse": by_reuse,
         "router": router.table(),
         "router_frozen": config.ROUTER_FROZEN,
         "timeline": timeline[-500:],

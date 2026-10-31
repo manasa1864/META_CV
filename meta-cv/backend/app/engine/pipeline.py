@@ -190,6 +190,12 @@ def _outcome(result: dict) -> str:
     return "unknown"
 
 
+def _reuse_kind(result: dict) -> str | None:
+    if result.get("from_cache"):
+        return "exact_repeat"
+    return result.get("compressed") or ("similar_state" if result.get("reused_state") else None)
+
+
 def _log(conversation_id, question, result, meter_, source, degraded) -> int:
     saved = result.get("tokens", 0) if result.get("from_cache") else 0
     r = result.get("route") or {}
@@ -197,15 +203,15 @@ def _log(conversation_id, question, result, meter_, source, degraded) -> int:
         cur = conn.execute(
             "INSERT INTO turns(conversation_id, question, hallucination_type, tier, mode, confidence, from_cache, "
             "reused_state, caught, prompt_tokens, completion_tokens, saved_tokens, answer, commitments, source, "
-            "outcome, signal_quality, risks, stopped, degraded, scope, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "outcome, signal_quality, risks, stopped, degraded, scope, reuse_kind, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (conversation_id, question, result["hallucination_type"], result["tier"], result.get("mode"),
              result["confidence"], int(bool(result.get("from_cache"))), int(bool(result.get("reused_state"))),
              json.dumps(result.get("caught", [])), meter_["prompt"], meter_["completion"], saved, result["answer"],
              json.dumps(memory.commitments_of(result.get("standalone") or question, result)), source,
              _outcome(result), "self", router.dumps(r) if r else None,
              json.dumps(result.get("stopped")) if result.get("stopped") else None, degraded,
-             "frozen" if config.ROUTER_FROZEN else None, time.time()),
+             "frozen" if config.ROUTER_FROZEN else None, _reuse_kind(result), time.time()),
         )
         today = time.strftime("%Y-%m-%d")
         conn.execute("INSERT INTO usage_daily(day, tokens) VALUES (?, ?) ON CONFLICT(day) DO UPDATE SET "
@@ -299,6 +305,8 @@ def run(store, question: str, mode: str = "auto", typing_delay: float = 0.015, c
                    "saved": result.get("tokens", 0) if result.get("from_cache") else 0},
         "router": {"scores": r["scores"], "learned": r["learned"], "evidence": r["evidence"],
                    "frozen": r.get("frozen", False)} if r else None,
+        "compression": {"mode": _reuse_kind(result),
+                        "prompt_trim": config.COMPRESSION and not flags.get("no_compression")},
         "premises": result.get("premises") or [],
         "path": result["path"],
     }

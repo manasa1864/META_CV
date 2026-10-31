@@ -19,6 +19,9 @@ from app.engine.health import health  # noqa: E402
 # The guardrail's claim extractor: by default the composed text asserts nothing beyond what the
 # lexical check already covers. Tests that exercise the guard script it explicitly.
 GUARD_EXTRACT = "List the atomic factual claims"
+# Compression (c): by default a similar question's facts are "not enough on their own", so tests that do not
+# exercise compression run the full procedure; compression tests script it explicitly.
+STATE_ANSWER = "Answer the question using ONLY the numbered verified facts"
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +39,7 @@ class FakeLLM:
 
     def __init__(self, monkeypatch):
         self.handlers = {}
-        self.defaults = {GUARD_EXTRACT: lambda u, t: {"claims": []}}
+        self.defaults = {GUARD_EXTRACT: lambda u, t: {"claims": []}, STATE_ANSWER: lambda u, t: {"answerable": False}}
         self.calls = []
         self.prompts = {}
         from app import llm

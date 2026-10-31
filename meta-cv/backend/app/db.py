@@ -130,6 +130,7 @@ MIGRATIONS = [
     ("turns", "stopped", "TEXT"),            # why the system stopped instead of answering, if it did
     ("turns", "degraded", "TEXT"),
     ("turns", "scope", "TEXT"),              # whose feedback this is (conversation scope)
+    ("turns", "reuse_kind", "TEXT"),         # exact_repeat | state_answer | template | similar_state
 ]
 
 

@@ -80,6 +80,11 @@ STATE_CACHE_MAX_AGE_DAYS = _num("STATE_CACHE_MAX_AGE_DAYS", 30)
 TURNS_RETENTION_DAYS = _num("TURNS_RETENTION_DAYS", 0)         # 0 keeps every turn
 AUDIT_CACHE_SECONDS = _num("AUDIT_CACHE_SECONDS", 300)
 
+# Token compression (engine/compression.py): trimmed prompts, answering from a similar question's verified
+# facts, and adapting a similar verified calculation instead of re-solving it from scratch.
+COMPRESSION = _flag("COMPRESSION", True)
+COMPRESS_MIN_SIMILARITY = _num("COMPRESS_MIN_SIMILARITY", 0.6)
+
 # Router: score = P(correct) - ROUTER_LAMBDA * P(hallucinated) - ABSTAIN_COST * P(abstained)
 ROUTER_FROZEN = _flag("ROUTER_FROZEN")
 ROUTER_LAMBDA = _num("ROUTER_LAMBDA", 1.0)

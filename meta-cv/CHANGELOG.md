@@ -3,6 +3,38 @@
 Numbers here are measured. Anything that needs the real model, or a real AuraDB run at size, is marked
 **not measured yet** until someone runs it.
 
+## 2026-10-31 (later)
+
+### Keyword fallback: general cue groups, measured on held-out data
+- **Rules:** rewritten around general classes of wording: arithmetic words, number words, quantity comparisons, durations, measurements with numbers, logic puzzles, and follow-up markers.
+  - Numbers inside names ("Boeing 747", "Python 3.12", "COVID-19") are not quantities.
+  - Whitespace and polite lead-ins are normalised.
+- **Measured (fallback only, labels by the author):**
+
+  | set | before | after |
+  |---|---|---|
+  | development (123) | 84.6% | 98.4% |
+  | held-out 1 (61; its misses were seen while revising) | 72.1% | 100% |
+  | held-out 2 (51; written after the rules were frozen, scored once) | n/a | **88.2%** |
+
+  - Held-out 2 is the honest estimate for new questions.
+  - Its 6 misses are kept as known failures in `tests/test_fallback.py`.
+- **Robustness:** rewording (case, punctuation, "please", "Could you tell me:", extra spaces) never changes the result across all 235 labelled questions.
+
+### Realistic demo questions
+- **Example chips:** multi-part facts, a comparison, facts-then-calculation, a pair of similar calculations, a follow-up chain, and the false premise.
+- **`bench_data/realistic.json`:** 16 items of these kinds, answered from the seed graph.
+- **Seed:** gains birth years and place hierarchies (England, India, the United States).
+
+### Token compression
+- **What it does:** trimmed prompts, answering from a similar question's verified facts, and reuse of a verified calculation. Every kind falls back to the full check when it cannot be trusted.
+- **`no_compression`:** a benchmark ablation that switches it off.
+- **Measured** (call counts with the scripted model in `tests/test_compression.py`):
+  - a similar calculation in balanced mode takes 2 model calls instead of 4;
+  - a similar fact question needs no new claim chain;
+  - on a graph with 120 irrelevant facts about the entity, the draft prompt shrinks to under half its length.
+- **Not measured yet:** token savings on real traffic. Run `python -m app.bench --ablate full,no_compression`.
+
 ## 2026-10-31
 
 ### Store contract and AuraDB hardening (C0, C2)

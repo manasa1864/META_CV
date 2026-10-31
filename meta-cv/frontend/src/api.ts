@@ -57,6 +57,7 @@ export type Final = {
   verified_only?: boolean
   tokens: { prompt: number; completion: number; total: number; calls: number; saved: number; graph_calls?: number }
   router: { scores: Record<string, number>; learned: boolean; evidence: number; frozen?: boolean } | null
+  compression?: { mode: 'exact_repeat' | 'state_answer' | 'template' | 'similar_state' | null; prompt_trim: boolean }
   premises?: PathItem[]
   path: PathItem[]
 }
@@ -166,7 +167,7 @@ export type Status = {
 }
 export const getStatus = () => getJson<Status>('/api/status')
 
-export type Example = { id: string; label: string; tier: HType; turns: string[]; replay: boolean }
+export type Example = { id: string; label: string; tier: HType; turns: string[]; replay: boolean; separate?: boolean }
 export const getExamples = () => getJson<Example[]>('/api/examples')
 
 export type Replay = {
@@ -282,6 +283,7 @@ export type Metrics = {
     avg_tokens: number
     score: number
   }[]
+  by_reuse: { kind: string; turns: number; avg_tokens: number | null; verified_rate: number | null }[]
   router_frozen: boolean
   timeline: { n: number; rolling_success: number | null; rolling_tokens: number | null; cached: boolean }[]
   health: { verified_only: boolean; reason: string | null; reject_rate: number; error_rate: number }

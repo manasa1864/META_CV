@@ -19,7 +19,7 @@ sys.path.insert(0, str(HERE / "backend"))
 from app import llm  # noqa: E402
 
 
-def fake(system, user, temperature=0):
+def script(system, user, temperature=0):
     time.sleep(0.4)  # feel like a model call
     if system.startswith("Profile the hallucination risks"):
         q = user.split("Question:")[-1]
@@ -30,6 +30,8 @@ def fake(system, user, temperature=0):
                 "entities": ["pride and prejudice"], "why": "demo"}
     if system.startswith("List the atomic factual claims"):
         return {"claims": []}
+    if system.startswith("Answer the question using ONLY the numbered verified facts"):
+        return {"answerable": False}
     if system.startswith("The user asks a follow-up"):
         follow_up = user.split("Follow-up:")[-1].strip()
         return {"answerable": False, "standalone": follow_up,
@@ -62,6 +64,12 @@ def fake(system, user, temperature=0):
     if system.startswith("You are checking"):
         return {"valid": True, "first_bad_step": None, "reason": ""}
     raise RuntimeError(system[:40])
+
+
+def fake(system, user, temperature=0):
+    out = script(system, user, temperature)
+    llm.record_usage(llm.estimate_tokens(system + user), llm.estimate_tokens(str(out)))  # estimated, like a model
+    return out
 
 
 llm.chat_json = fake

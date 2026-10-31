@@ -98,6 +98,19 @@ Score = P(correct) − λ·P(hallucinated) − c·P(abstained), blended with a p
 - **Weighting:** outcomes count by signal quality. Benchmark ground truth and user feedback count; the system's own confidence is excluded by default because it is circular.
 - **Freezing:** `ROUTER_FROZEN=1` (implied by `JUDGE_MODE=1`) reads the trained state but never changes it.
 
+### Token compression
+
+Fewer tokens, with no check that catches a hallucination skipped (`engine/compression.py`):
+
+| kind | what happens | safety net |
+|---|---|---|
+| trimmed prompts | the claim draft sees only the ~30 known facts and ~20 relation names most relevant to the question; follow-ups get a compact history | facts about the question's own entities always rank first |
+| answer from verified facts | a factual question similar to one answered before is tried against that question's verified facts first | facts re-checked against the graph; answer must pass the faithfulness guard; otherwise the full check runs |
+| reuse a verified calculation | a similar calculation adapts the verified steps in one solution | arithmetic machine-checked and logic-checked; if either fails, the full cross-check runs. Trade-off: the independent second solution is skipped |
+| exact repeat | the stored verified answer is reused at zero model calls | re-validated against the graph first |
+
+`tests/test_compression.py` counts the model calls each kind saves: two calls instead of four for a similar calculation in balanced mode, and no new claim chain for a similar fact question. Measure the token effect on real traffic with `python -m app.bench --ablate full,no_compression`. The Metrics tab reports average tokens per answer for each kind of reuse.
+
 ## Tools
 
 | command | what it does |
@@ -106,9 +119,9 @@ Score = P(correct) − λ·P(hallucinated) − c·P(abstained), blended with a p
 | `python -m app.audit [--fail-on error]` | graph audit: functional violations, incompatible pairs, cycles, near-duplicates, provenance, staleness, relation drift, dangling caches |
 | `python -m app.recheck` | re-validate cached paths and reasoning states; drop expired claims; prune old state |
 | `python -m app.bench --load-synthetic` | load the fictional benchmark knowledge base (`--unload-synthetic` removes it) |
-| `python -m app.bench [--ablate full,no_graph,...] [--repeats 3] [--train]` | benchmark with Wilson intervals, ablations and router train/test split; writes `results/` |
+| `python -m app.bench [--ablate full,no_graph,no_compression,...] [--repeats 3] [--train]` | benchmark (familiar, synthetic, realistic and real-world sets) with Wilson intervals, ablations and router train/test split; writes `results/` |
 | `python -m app.bench --report` | methodology, tables and caveats of the latest run |
-| `python -m app.bench_taxonomy [--fallback-only]` | confusion matrix of the classifier on 123 labelled questions |
+| `python -m app.bench_taxonomy [--fallback-only]` | classifier accuracy on the development set and two held-out sets, with a confusion matrix |
 | `python -m app.scale --backend neo4j --sizes 1000,10000,...` | AuraDB scale test (tagged, cleaned up, refuses to touch other data) |
 | `python -m app.loadtest` | 20 concurrent conversations with a scripted model; no lock errors allowed |
 | `python -m app.export_snapshot` | read-only SQLite copy of the Aura graph for the fallback |
@@ -127,6 +140,9 @@ Deployment, judge mode and the AuraDB pausing plan are in [docs/DEPLOY.md](docs/
   - the familiar set's facts are in the seed graph;
   - real-world long-tail items still need to be written with sources (`bench_data/real_world_TODO.json`);
   - keyword grading can miss a fabricated detail that avoids every forbidden term.
-- **The keyword fallback is crude** (85% on the taxonomy set). It is only used when the model's classification fails.
+- **The keyword fallback is a heuristic.** It is only used when the model's classification fails.
+  - It scores 88% on a held-out set written after its rules were frozen (98% on the set it was developed against).
+  - Its known misses are listed in `tests/test_fallback.py`.
+- **Reusing a verified calculation skips the independent second solution.** That is the price of its token saving; the adapted solution is still machine-checked and logic-checked.
 - **AuraDB Free pauses when idle and has node and relationship caps.** The snapshot fallback is read-only and only as fresh as its last export.
 - **Learning state is local:** router outcomes and feedback live in one SQLite file. Without a persistent disk they reset on restart (see docs/DEPLOY.md).

@@ -273,6 +273,7 @@ def test_similar_question_reuses_verified_reasoning_state(fake_llm):
 
     fake_llm.on(ROUTER, lambda u, t: {"type": "reasoning"})
     fake_llm.on(SOLVE, solve)
+    fake_llm.on(CHECK, lambda u, t: {"valid": True})   # adapting a verified solution always gets a logic check
     store = SqliteGraphStore()
     first = final(run(store, "A shop has 12 boxes with 7 apples each. 4 apples are eaten. How many apples are left?",
                       "aggressive"))
@@ -281,7 +282,7 @@ def test_similar_question_reuses_verified_reasoning_state(fake_llm):
                        "aggressive"))
     assert second["reused_state"] and second["reused_state"]["similarity"] == 1.0
     assert "A similar problem was solved and verified before" in fake_llm.prompts[SOLVE][-1]
-    assert second["path"][0]["result"] == "81"
+    assert second["path"][0]["result"] == "81" and second["compression"]["mode"] == "template"
 
 
 def test_bench_runs_end_to_end(fake_llm, monkeypatch, tmp_path):

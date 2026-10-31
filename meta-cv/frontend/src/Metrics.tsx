@@ -251,6 +251,22 @@ export default function MetricsView() {
 
         <section className="card">
           <div className="card-head">
+            <h2>Tokens by kind of reuse</h2>
+          </div>
+          <p className="card-note">
+            Live, measured per answer. "state answer" = answered from a similar question's verified facts; "template" =
+            adapted a similar verified calculation; "similar state" = a similar state was shown to the model.
+          </p>
+          <div className="table-wrap">
+            <Table
+              head={['reuse', 'answers', 'avg tokens', 'verified']}
+              rows={(m.by_reuse ?? []).map((r) => [r.kind.replaceAll('_', ' '), r.turns, num(r.avg_tokens), pct(r.verified_rate)])}
+            />
+          </div>
+        </section>
+
+        <section className="card">
+          <div className="card-head">
             <h2>Per-tier performance</h2>
           </div>
           <p className="card-note">Live, excluding cache hits. "Reused" = adapted a similar question's verified state.</p>

@@ -22,7 +22,7 @@ import time
 from .. import config, llm, state_cache
 from ..db import connect
 from ..graph_common import EXCLUSIVE_RELATIONS
-from . import guardrails
+from . import compression, guardrails
 from .router import caught
 from .trace import Trace
 
@@ -296,7 +296,12 @@ def walk(store, question: str, entities: list[str], trace: Trace, prior: dict | 
     ev = trace.start("factual", "Drafting the answer as a path of claims")
     yield ev
     relations = store.relation_names()
-    known_txt = "\n".join(f"- {f['subject']} | {f['relation']} | {f['object']}" for f in known[:80]) or "(none)"
+    if compression.enabled():
+        shown = compression.rank_facts(known, question, entities)
+        relations = compression.relevant_relations(relations, shown, question)
+    else:
+        shown = known[:80]
+    known_txt = "\n".join(f"- {f['subject']} | {f['relation']} | {f['object']}" for f in shown) or "(none)"
     claims = _parse_claims(llm.chat_json(
         DRAFT_SYSTEM, f"KNOWN FACTS:\n{known_txt}\n\nRelations in use: {relations}\n\nQuestion: {question}"
     ))
@@ -319,12 +324,62 @@ def walk(store, question: str, entities: list[str], trace: Trace, prior: dict | 
     return checked, _caught_by_checks(checked) + found
 
 
+STATE_ANSWER_SYSTEM = """Answer the question using ONLY the numbered verified facts.
+If they fully answer it, answer in plain, concise prose and list the numbers of the facts you used.
+If they do not fully answer every part of the question, set answerable to false and do not answer.
+Return only JSON: {"answerable": true, "answer": "...", "used": [1]}"""
+
+
+def answer_from_state(store, question: str, prior: dict, trace: Trace):
+    """Generator (compression c): answer from a similar question's verified facts, re-validated against the graph,
+    without drafting and checking a new claim chain. Returns a tier result, or None to run the full procedure."""
+    triples = [t for t in prior["state"].get("triples", []) if t.get("subject") and t.get("object")]
+    if not triples:
+        return None
+    ev = trace.start("states", "Trying the verified facts of a similar question first",
+                     f"“{prior['question']}” (similarity {prior['similarity']}), {len(triples)} verified fact(s)")
+    yield ev
+    stale = still_holds(store, triples)
+    if stale:
+        yield trace.settle(ev, "warn", f"Those facts no longer all hold ({stale}). Running the full check.")
+        return None
+    numbered = "\n".join(f"{i}. {t['subject']} {t['relation'].replace('_', ' ')} {t['object']}"
+                         for i, t in enumerate(triples, 1))
+    d = llm.chat_json(STATE_ANSWER_SYSTEM, f"Question: {question}\n\nVerified facts:\n{numbered}")
+    d = d if isinstance(d, dict) else {}
+    used = []
+    for i in d.get("used") or []:
+        if isinstance(i, int) and 1 <= i <= len(triples) and triples[i - 1] not in used:
+            used.append(triples[i - 1])
+    text = str(d.get("answer") or "").strip()
+    if d.get("answerable") is not True or not used or not text:
+        yield trace.settle(ev, "info", "They do not answer every part of this question. Running the full check.")
+        return None
+    accepted = [{**t, "status": "accepted", "reason": "verified for a similar question, re-checked now",
+                 "depends_on": []} for t in used]
+    problems = [] if guardrails.disabled() else guardrails.factual_problems(question, text, accepted, [])
+    if problems:
+        yield trace.settle(ev, "warn", f"The answer added unverified detail ({'; '.join(problems[:2])}). "
+                                       "Running the full check.")
+        return None
+    yield trace.settle(ev, "ok", f"Answered from {len(used)} fact(s) verified for the similar question and re-checked "
+                                 "against the graph - no new claim chain needed.")
+    graph_share = sum(c.get("source") in ("graph", "graph-corrected") for c in accepted) / len(accepted)
+    return {"tier": "factual", "answer": text, "confidence": "high" if graph_share >= 0.5 else "medium",
+            "path": accepted, "caught": [], "withheld": 0, "cacheable": False, "stopped": None,
+            "compressed": "state_answer"}
+
+
 def answer(store, question: str, entities: list[str], trace: Trace, prior: dict | None = None,
            earlier: list[dict] | None = None, verified_only: bool = False):
     """Generator: yields trace events, returns the tier result.
 
     prior: a similar question's verified state (states.find); earlier: claims this conversation established.
     """
+    if compression.similar_enough(prior) and not verified_only:
+        reused = yield from answer_from_state(store, question, prior, trace)
+        if reused:
+            return reused
     checked, found = yield from walk(store, question, entities, trace, prior, earlier, verified_only)
     accepted = [c for c in checked if c["status"] == "accepted"]
     missing = [c for c in checked if c["status"] != "accepted"]

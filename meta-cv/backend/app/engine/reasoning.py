@@ -13,7 +13,7 @@ The three modes trade cost for caution. Edit MODES to retune them.
 from collections import Counter
 
 from .. import llm
-from . import guardrails, mathcheck
+from . import compression, guardrails, mathcheck
 from .router import caught
 from .trace import Trace
 
@@ -196,13 +196,29 @@ def answer(question: str, mode: str, trace: Trace, prior: dict | None = None, ea
                      f"{cfg['agreement']}, logic check: {'on' if cfg['logic_check'] else 'off'}, "
                      f"max backtracks: {cfg['max_backtracks']}"
                      + (f", built on {len(premises)} verified premise(s)" if premises else ""))
-    if prior:
+    solutions: list[dict] = []
+    winner = None
+    template, failed_template = None, None
+    if compression.similar_enough(prior) and any(s.get("expression") for s in prior["state"].get("steps", [])):
+        yield trace.note("compression", "Adapting a verified solution to this similar problem",
+                         f"“{prior['question']}” (similarity {prior['similarity']}) was solved and verified before. One "
+                         "adapted solution is machine-checked and logic-checked; if it passes, the independent "
+                         "cross-check solutions are skipped.")
+        sol = yield from solve_once(problem, {**cfg, "logic_check": True, "max_backtracks": 1}, trace,
+                                    "Adapted solution", 0, prior)
+        if sol["verified"] and INSUFFICIENT not in sol["final_answer"].lower():
+            template, winner = sol, answer_key(sol["final_answer"])
+            solutions.append(sol)
+        else:
+            failed_template = sol
+            yield trace.note("compression", "The adapted solution did not pass its checks",
+                             "Solving independently, with the full cross-check.", "warn")
+            prior = None
+    elif prior:
         yield trace.note("states", "Reusing verified reasoning",
                          f"A similar problem (“{prior['question']}”, similarity {prior['similarity']}) was solved and "
                          f"verified before; solution 1 adapts its {len(prior['state']['steps'])} checked steps.", "ok")
-    solutions: list[dict] = []
-    winner = None
-    while len(solutions) < cfg["max_samples"]:
+    while template is None and len(solutions) < cfg["max_samples"]:
         n = len(solutions)
         sol = yield from solve_once(problem, cfg, trace, f"Solution {n + 1}", 0 if n == 0 else 0.7,
                                     prior if n == 0 else None)
@@ -235,6 +251,9 @@ def answer(question: str, mode: str, trace: Trace, prior: dict | None = None, ea
 
     found = [caught("faithful.logic", "reasoning", "corrected", f"solution {k}, {fix}")
              for k, s in enumerate(solutions, 1) for fix in s["fixes"]]
+    if failed_template:
+        found.append(caught("faithful.logic", "reasoning", "dropped",
+                            f"adapted solution rejected ({failed_template.get('problem', 'checks failed')})"))
     found += [caught("faithful.logic", "reasoning", "dropped" if s is not best else "flagged",
                      f"solution {k} could not be verified ({s['problem']})")
               for k, s in enumerate(solutions, 1) if not s["verified"]]
@@ -295,4 +314,5 @@ def answer(question: str, mode: str, trace: Trace, prior: dict | None = None, ea
         "withheld": 0,
         "stopped": stopped,
         "cacheable": confidence == "high",
+        "compressed": "template" if template else None,
     }
