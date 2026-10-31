@@ -7,7 +7,7 @@ from app.db import connect
 from app.engine import mathcheck, pipeline
 from app.graph_store import SqliteGraphStore
 
-ROUTER = "Classify which kind of hallucination"
+ROUTER = "Profile the hallucination risks"
 DRAFT = "Answer the question as a chain"
 JUDGE = "Judge whether ONE claim"
 PROBE = "Answer from your own knowledge"
@@ -157,7 +157,7 @@ def test_stream_endpoint(fake_llm, monkeypatch):
         assert r.headers["content-type"].startswith("text/event-stream")
         events = [json.loads(line[6:]) for line in r.text.splitlines() if line.startswith("data: ")]
         assert events[-1]["type"] == "final"
-        assert events[-1]["tokens"]["calls"] == 3  # router, draft, compose - metered across stream threads
+        assert events[-1]["tokens"]["calls"] == 4  # router, draft, compose, guard - metered across stream threads
         assert any(e["type"] == "thinking_done" and e["message"] == "Processing complete" for e in events)
         assert client.post("/chat", json={"question": "Where was Jane Austen born?"}).json()["answer"] == "Steventon."
 
@@ -261,7 +261,8 @@ def test_graph_incompatible_objects_are_not_both_accepted(fake_llm):
     fake_llm.on(COMPOSE, lambda u, t: "Dystopian.")
     f = final(run(store, "What genre is 1984?"))
     assert [c["status"] for c in f["path"]] == ["accepted", "rejected"]
-    assert ("reasoning", "dropped") in [(c["type"], c["action"]) for c in f["caught"]]
+    assert ("factual.relation_error", "factual", "factual", "dropped") in [
+        (c["risk"], c["type"], c["origin_tier"], c["action"]) for c in f["caught"]]
 
 
 def test_similar_question_reuses_verified_reasoning_state(fake_llm):
@@ -284,19 +285,30 @@ def test_similar_question_reuses_verified_reasoning_state(fake_llm):
 
 
 def test_bench_runs_end_to_end(fake_llm, monkeypatch, tmp_path):
-    from app import bench
+    from app import bench, config
 
-    monkeypatch.setattr(bench, "RESULTS_DIR", tmp_path)
+    data = tmp_path / "bench_data"
+    data.mkdir()
+    (data / "familiar.json").write_text(json.dumps({"items": [
+        {"id": "f1", "kind": "familiar", "graph_contains_answer": True, "turns": [
+            {"question": "Where was Jane Austen born?", "type": "factual", "risks": [], "expected": ["steventon"],
+             "forbidden": ["bath"]}]},
+        {"id": "f2", "kind": "familiar", "turns": [
+            {"question": "What is 17*23?", "type": "reasoning", "risks": [], "expected": 391},
+            {"question": "Now add 9 to that result.", "type": "consistency", "risks": [], "expected": 400}]},
+        {"id": "f3", "kind": "false_premise", "turns": [
+            {"question": "When did Jane Austen win the Nobel Prize?", "type": "factual", "risks": [], "expect_abstain": True}]},
+    ]}))
+    monkeypatch.setattr(config, "BENCH_DATA_DIR", data)
+    monkeypatch.setattr(bench, "RESULTS_DIR", tmp_path / "results")
+    monkeypatch.setattr(config, "RESULTS_DIR", tmp_path / "results")
     monkeypatch.setattr(bench, "get_store", seeded_store)
-    monkeypatch.setattr(bench, "CONVERSATIONS", [
-        [("factual", "Where was Jane Austen born?", ["steventon"])],
-        [("reasoning", "What is 17*23?", 391), ("consistency", "Now add 9 to that result.", 400)],
-    ])
-    fake_llm.on(BASELINE, lambda u, t: "Bath." if "Austen" in u and "17" not in u
-                else "Answer: 401" if "Now add" in u else "Answer: 391")
+    fake_llm.on(BASELINE, lambda u, t: "Bath." if "born" in u else "Answer: 401" if "Now add" in u
+                else "In 1817." if "Nobel" in u else "Answer: 391")
     fake_llm.on(ROUTER, lambda u, t: {"type": "consistency" if "Conversation so far" in u else
                                       "reasoning" if "17" in u else "factual", "entities": ["jane austen"]})
-    fake_llm.on(DRAFT, lambda u, t: {"claims": [{"subject": "jane austen", "relation": "born_in", "object": "steventon"}]})
+    fake_llm.on(DRAFT, lambda u, t: {"claims": [{"subject": "jane austen", "relation": "won", "object": "nobel prize"}]}
+                if "Nobel" in u else {"claims": [{"subject": "jane austen", "relation": "born_in", "object": "steventon"}]})
     fake_llm.on(COMPOSE, lambda u, t: "Steventon.")
     fake_llm.on(SOLVE, _solve_17x23_then_plus_9)
     fake_llm.on(CHECK, lambda u, t: {"valid": True})
@@ -305,21 +317,32 @@ def test_bench_runs_end_to_end(fake_llm, monkeypatch, tmp_path):
     fake_llm.on(JUDGE, lambda u, t: {"verdict": "false", "confidence": 0.9})
     fake_llm.on(PROBE, lambda u, t: {"answers": []})
 
-    s = bench.main(["--train"])
-    assert s["baseline"]["overall"]["n"] == 3 and s["baseline"]["overall"]["accuracy"] == 0.333
-    assert s["system"]["overall"]["accuracy"] == 1.0 and s["system"]["overall"]["hallucination_rate"] == 0
-    assert s["taxonomy_accuracy"] == 1.0
-    assert s["training"]["curve"] and s["training"]["per_tier"]["factual"]["factual"] == 1.0
-    assert list(tmp_path.glob("bench-*.json"))
+    s = bench.main(["--sets", "familiar", "--train"])
+    base, full = s["configs"]["baseline"]["overall"], s["configs"]["full"]["overall"]
+    assert base["n"] == 4 and base["correct"] == 1 and base["hallucinated"] == 3
+    assert full["n"] == 4 and full["correct"] == 4 and full["hallucinated"] == 0
+    assert full["hallucination_ci"][0] == 0.0 and full["accuracy_ci"][1] == 1.0
+    assert s["configs"]["full"]["by_kind"]["false_premise"]["correct"] == 1   # abstaining is the right answer
+    assert s["routing"]["in_sample_curve"] and "test" in s["routing"]
+    assert (tmp_path / "results" / "latest.json").exists()
+    assert "CAVEATS" in bench.report_text(s)
     with TestClient(main.app) as client:
-        assert client.get("/metrics").json()["bench"]["items"] == 3
+        assert client.get("/metrics").json()["bench"]["meta"]["items"] == 3
+        assert client.get("/results/latest").json()["configs"]["full"]["overall"]["n"] == 4
 
 
 def test_grading():
-    from app.bench import grade
+    from app.bench import grade, wilson
 
     assert grade("**Answer: 80 apples**\n\nHow I got there: 12*7=84", 80) == "correct"
     assert grade("It is 84, then 80", 80) == "correct"
     assert grade("Answer: 82", 80) == "hallucinated"
     assert grade("I couldn't verify any facts to answer this.", ["austen"]) == "abstained"
     assert grade("Jane Austen wrote it in 1813.", ["austen", "1813"]) == "correct"
+    # claim-level: the right keyword next to a forbidden claim is still a hallucination
+    assert grade("Jane Austen, born in Bath, wrote it.", ["austen"], ["bath"]) == "hallucinated"
+    assert grade("Castrell is a different town.", ["castrell"], ["castrel"]) == "correct"   # word boundary
+    assert grade("There is no record of that prize.", expect_abstain=True) == "correct"
+    assert grade("She won it in 1817.", expect_abstain=True) == "hallucinated"
+    assert grade("anything", ["x"], stopped=True) == "abstained"
+    assert wilson(0, 10)[0] == 0.0 and wilson(10, 10)[1] == 1.0 and wilson(0, 0) is None

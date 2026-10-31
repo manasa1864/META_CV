@@ -76,6 +76,17 @@ def state_of(result: dict) -> dict | None:
         triples = [{k: c[k] for k in ("subject", "relation", "object", "source")}
                    for c in result["path"] if c["status"] == "accepted"]
         return {"triples": triples} if triples else None
-    if result["tier"] == "reasoning" and result["confidence"] == "high":
-        return {"steps": result["path"], "final_answer": result.get("final_answer", "")}
+    if result["tier"] == "reasoning" and result["confidence"] == "high" and not result.get("stopped"):
+        premises = [{k: p[k] for k in ("subject", "relation", "object", "source")} for p in result.get("premises") or []]
+        return {"steps": result["path"], "final_answer": result.get("final_answer", ""), "premises": premises}
     return None
+
+
+def prune(max_rows: int) -> int:
+    """Keep at most max_rows states, dropping the least-hit (then oldest) first."""
+    with connect() as conn:
+        n = conn.execute("SELECT COUNT(*) FROM reasoning_states").fetchone()[0]
+        if n <= max_rows:
+            return 0
+        return conn.execute("DELETE FROM reasoning_states WHERE id IN (SELECT id FROM reasoning_states "
+                            "ORDER BY hits ASC, id ASC LIMIT ?)", (n - max_rows,)).rowcount

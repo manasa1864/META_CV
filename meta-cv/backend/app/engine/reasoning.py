@@ -13,7 +13,8 @@ The three modes trade cost for caution. Edit MODES to retune them.
 from collections import Counter
 
 from .. import llm
-from . import mathcheck
+from . import guardrails, mathcheck
+from .router import caught
 from .trace import Trace
 
 MODES = {
@@ -30,7 +31,11 @@ STRICTNESS = {"aggressive": 0, "balanced": 1, "conservative": 2}
 SOLVE_SYSTEM = """Solve the problem step by step. Each step states one thing.
 When a step computes a number, put the pure arithmetic in "expression" (digits, + - * / ** % and parentheses only;
 no units, words or variables) and the value you get in "result". Otherwise leave both empty.
+If VERIFIED PREMISES are given, take every real-world fact from them only; if a fact you need is not there,
+set final_answer to "insufficient verified facts".
 Return only JSON: {"steps": [{"text": "...", "expression": "", "result": ""}], "final_answer": "..."}"""
+
+INSUFFICIENT = "insufficient verified facts"
 
 RESUME_SYSTEM = SOLVE_SYSTEM + """
 You are resuming a solution. The steps given as VERIFIED are correct: keep them exactly and continue after them.
@@ -40,6 +45,7 @@ CHECK_SYSTEM = """You are checking someone else's solution; do not assume it is 
 Find the FIRST step that is wrong: it misreads the problem, does not follow from the problem and earlier steps,
 uses a wrong formula, or contradicts an earlier step. Arithmetic has already been machine-checked; focus on logic and setup.
 Also check the final answer actually answers the question asked.
+If VERIFIED PREMISES are given, a step that uses a real-world fact not among them is wrong.
 Return only JSON: {"valid": true, "first_bad_step": null, "reason": ""}"""
 
 
@@ -170,17 +176,26 @@ def _same_question(a: str, b: str) -> bool:
     return " ".join(a.lower().split()).rstrip("?. ") == " ".join(b.lower().split()).rstrip("?. ")
 
 
-def answer(question: str, mode: str, trace: Trace, prior: dict | None = None, earlier: list[dict] | None = None):
+def premises_txt(premises: list[dict]) -> str:
+    return "\n\nVERIFIED PREMISES (real-world facts checked against the knowledge graph):\n" + "\n".join(
+        f"- {p['subject']} {p['relation'].replace('_', ' ')} {p['object']}" for p in premises)
+
+
+def answer(question: str, mode: str, trace: Trace, prior: dict | None = None, earlier: list[dict] | None = None,
+           premises: list[dict] | None = None):
     """Generator: yields trace events, returns the tier result.
 
     prior: a similar problem's verified state (states.find), adapted by the first solution only, so the
     independent cross-check solutions stay independent. earlier: answers this conversation already gave.
+    premises: verified facts (from the factual tier) a mixed question's calculation must build on.
     """
     cfg = MODES[mode]
+    problem = question + (premises_txt(premises) if premises else "")
     yield trace.note("reasoning", f"Mode: {mode}",
                      f"{cfg['samples']} independent solution(s) (up to {cfg['max_samples']}), agreement: "
                      f"{cfg['agreement']}, logic check: {'on' if cfg['logic_check'] else 'off'}, "
-                     f"max backtracks: {cfg['max_backtracks']}")
+                     f"max backtracks: {cfg['max_backtracks']}"
+                     + (f", built on {len(premises)} verified premise(s)" if premises else ""))
     if prior:
         yield trace.note("states", "Reusing verified reasoning",
                          f"A similar problem (“{prior['question']}”, similarity {prior['similarity']}) was solved and "
@@ -189,7 +204,7 @@ def answer(question: str, mode: str, trace: Trace, prior: dict | None = None, ea
     winner = None
     while len(solutions) < cfg["max_samples"]:
         n = len(solutions)
-        sol = yield from solve_once(question, cfg, trace, f"Solution {n + 1}", 0 if n == 0 else 0.7,
+        sol = yield from solve_once(problem, cfg, trace, f"Solution {n + 1}", 0 if n == 0 else 0.7,
                                     prior if n == 0 else None)
         solutions.append(sol)
         if len(solutions) < cfg["samples"]:
@@ -218,35 +233,54 @@ def answer(question: str, mode: str, trace: Trace, prior: dict | None = None, ea
     else:
         best, confidence = solutions[0], "low"
 
-    caught = [{"type": "reasoning", "action": "corrected", "detail": f"solution {k}, {fix}"}
-              for k, s in enumerate(solutions, 1) for fix in s["fixes"]]
-    caught += [{"type": "reasoning", "action": "dropped" if s is not best else "flagged",
-                "detail": f"solution {k} could not be verified ({s['problem']})"}
-               for k, s in enumerate(solutions, 1) if not s["verified"]]
+    found = [caught("faithful.logic", "reasoning", "corrected", f"solution {k}, {fix}")
+             for k, s in enumerate(solutions, 1) for fix in s["fixes"]]
+    found += [caught("faithful.logic", "reasoning", "dropped" if s is not best else "flagged",
+                     f"solution {k} could not be verified ({s['problem']})")
+              for k, s in enumerate(solutions, 1) if not s["verified"]]
     distinct = {answer_key(s["final_answer"]) for s in verified}
     if len(distinct) > 1:
-        caught.append({"type": "reasoning", "action": "flagged",
-                       "detail": "independent solutions disagreed: " + ", ".join(s["final_answer"] for s in verified)})
+        found.append(caught("faithful.logic", "reasoning", "flagged",
+                            "independent solutions disagreed: " + ", ".join(s["final_answer"] for s in verified)))
+
+    stopped = None
+    if INSUFFICIENT in best["final_answer"].lower():
+        stopped = {"reason": "premise_unverified", "detail": "the calculation needs a fact that could not be verified"}
+        found.append(caught("faithful.premise", "reasoning", "dropped", stopped["detail"]))
+        confidence = "low"
+
+    mismatch = guardrails.reasoning_problem(best["steps"], best["final_answer"]) \
+        if not stopped and best["verified"] else None
+    if mismatch:
+        found.append(caught("faithful.logic", "reasoning", "flagged", mismatch))
+        yield trace.note("guard", "Final answer does not match the checked steps", mismatch, "fail")
+        confidence = "low"
 
     clash = next((e for e in earlier or [] if _same_question(e["question"], question)
                   and answer_key(e["final_answer"]) != answer_key(best["final_answer"])), None)
     if clash:
-        caught.append({"type": "consistency", "action": "flagged",
-                       "detail": f"earlier in this conversation the answer was {clash['final_answer']}, now {best['final_answer']}"})
+        found.append(caught("faithful.context", "reasoning", "flagged",
+                            f"earlier in this conversation the answer was {clash['final_answer']}, now {best['final_answer']}"))
         yield trace.note("consistency", "Conflict with an earlier answer",
                          f"Earlier this conversation answered {clash['final_answer']}; this run verified "
                          f"{best['final_answer']}.", "warn")
         confidence = "medium" if confidence == "high" else confidence
 
-    lines = [f"**Answer: {best['final_answer'] or 'not determined'}**", "", "How I got there:"]
-    lines += [f"{i}. {s['text']}" + (f" ({s['expression']} = {s['result']})" if s["expression"] else "")
-              for i, s in enumerate(best["steps"], 1)]
+    if stopped:
+        lines = ["I can't answer this reliably: the calculation needs a real-world fact I could not verify, "
+                 "and I'd rather not guess it."]
+    else:
+        lines = [f"**Answer: {best['final_answer'] or 'not determined'}**", "", "How I got there:"]
+        lines += [f"{i}. {s['text']}" + (f" ({s['expression']} = {s['result']})" if s["expression"] else "")
+                  for i, s in enumerate(best["steps"], 1)]
     if clash:
         lines += ["", f"_Note: earlier in this conversation I answered {clash['final_answer']}; "
                       f"this re-checked solution gives {best['final_answer']}._"]
     elif confidence == "medium":
         lines += ["", "_Note: the independent solutions did not fully agree, so treat this with some caution._"]
-    if confidence == "low":
+    if mismatch:
+        lines += ["", f"_Warning: {mismatch}._"]
+    elif confidence == "low" and not stopped:
         lines += ["", f"_Warning: I could not verify this solution ({best.get('problem', 'checks failed')})._"]
     return {
         "tier": "reasoning",
@@ -255,8 +289,10 @@ def answer(question: str, mode: str, trace: Trace, prior: dict | None = None, ea
         "confidence": confidence,
         "path": best["steps"],
         "final_answer": best["final_answer"],
+        "premises": premises or [],
         "solutions": len(solutions),
-        "caught": caught,
+        "caught": found,
         "withheld": 0,
+        "stopped": stopped,
         "cacheable": confidence == "high",
     }
