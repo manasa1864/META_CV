@@ -9,10 +9,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Pinned to Ubuntu 24.04: ubuntu-latest now means Ubuntu 26, and Playwright 1.56 cannot install
+# its browser dependencies there yet. Move to ubuntu-latest once Playwright supports it.
 jobs:
   backend:
     name: Backend tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: meta-cv/backend
@@ -30,7 +32,7 @@ jobs:
 
   frontend:
     name: Frontend lint and build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: meta-cv/frontend
@@ -47,7 +49,7 @@ jobs:
 
   e2e:
     name: Browser smoke test (scripted demo)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [backend, frontend]
     steps:
       - uses: actions/checkout@v4
@@ -64,10 +66,11 @@ jobs:
           cache: npm
           cache-dependency-path: meta-cv/frontend/package-lock.json
       - working-directory: meta-cv/frontend
-        run: |
-          npm ci
-          npx playwright install --with-deps chromium
-          npx playwright test
+        run: npm ci
+      - working-directory: meta-cv/frontend
+        run: npx playwright install --with-deps chromium
+      - working-directory: meta-cv/frontend
+        run: npx playwright test
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
