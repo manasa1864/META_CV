@@ -390,10 +390,8 @@ def get_metrics():
 
 @app.get("/results/latest")
 def results_latest():
-    data = metrics.latest_results()
-    if data is None:
-        raise HTTPException(404, "no results yet - run python -m app.bench")
-    return data
+    """null until `python -m app.bench` has written results; that is a normal state, not an error."""
+    return metrics.latest_results()
 
 
 @app.get("/examples")

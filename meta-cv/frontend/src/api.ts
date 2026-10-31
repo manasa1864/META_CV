@@ -250,7 +250,7 @@ export type Results = {
   } | null
   audit?: { counts: Record<string, number>; by_check: Record<string, number>; ran_at: number } | null
 }
-export const getResults = () => getJson<Results>('/api/results/latest')
+export const getResults = () => getJson<Results | null>('/api/results/latest') // null until a benchmark has run
 
 export type Metrics = {
   totals: {

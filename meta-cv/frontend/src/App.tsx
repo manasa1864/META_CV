@@ -78,7 +78,7 @@ function store(key: string, value: string) {
     /* private mode: the choice lasts for this visit only */
   }
 }
-const WAVE_SRC = '/prism-wave.png'
+const WAVE_SRC = '/prism-wave.webp'
 
 const STAGES: Record<string, string> = {
   cache: 'Verified-path cache',

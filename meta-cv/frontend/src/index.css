@@ -210,7 +210,7 @@ sup { display:inline-grid; place-items:center; width:17px; height:17px; border-r
 .mode-card>i { position:absolute; right:16px; top:16px; width:22px; height:22px; border-radius:50%; display:grid; place-items:center; background:var(--accent); color:#fff; }
 .mode-card>i .icon { width:13px; stroke-width:2.6; }
 .mode-orb { display:block; width:100%; height:64px; border-radius:11px; }
-.dreamy-orb { background:url(/prism-wave.png) 60% 55%/cover; }
+.dreamy-orb { background:url(/prism-wave.webp) 60% 55%/cover; }
 .still-orb { background:linear-gradient(100deg,var(--blue-tint),var(--lav-tint) 50%,var(--pink-tint)); }
 .replay { display:flex; align-items:center; gap:8px; margin:14px 0 6px; border:0; background:var(--lav-tint); color:var(--lav-deep); font-weight:600; font-size:14px; padding:10px 16px; border-radius:99px; cursor:pointer; }
 .replay .icon { width:17px; }
