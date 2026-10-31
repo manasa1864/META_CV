@@ -54,7 +54,11 @@ question (+ conversation)
   -> learned router picks the tier                                           engine/router.py
   -> refuse if the last audit found a conflict about these entities           audit.py
   -> tier
-       factual      claims verified node by node: graph, then judge + blind probe     engine/factual.py
+       factual      graph first: the question split into parts, each part the graph
+                    can answer taken from the graph (every stored value); the rest
+                    drafted and verified node by node: graph, then judge + blind
+                    probe; unanswered parts reported                                  engine/decompose.py,
+                                                                                      engine/factual.py
        reasoning    arithmetic machine-checked, every number traced to its source,
                     logic checked, backtracking, independent solutions must agree    engine/reasoning.py
        consistency  from what the conversation verified; derived numbers must pass
@@ -92,6 +96,34 @@ The system answers "I can't answer this reliably" (and says why) when:
 5. **budget:** the per-question budget (LLM calls, tokens, graph queries) ran out.
 
 A global breaker switches to **verified-only mode** when recent answers are mostly rejections, or when the model or graph keep failing. In that mode only graph facts count, and a banner says so.
+
+### Graph-first answers
+
+Drafting first and checking second has a blind spot: the model chooses which facts to claim, so an answer can be
+fully verified and still incomplete. Two characters named, four in the graph, and "high" confidence anyway.
+So the factual tier asks the graph first (`engine/decompose.py`):
+1. **Split:** one model call turns the question into parts. Each part is a triple with one unknown (a lookup),
+   or none (a yes/no check). `#n` refers to an earlier part's answer, e.g. `(#1, born_in, ?)` for "where was
+   the author born".
+2. **Fill from the graph:** a lookup returns *every* stored value for that part. A yes/no part the graph
+   contradicts comes back with the stored value (corrected), and the false-premise stop condition sees it.
+3. **Draft only the rest:** the model is shown what the graph already answered and asked only for the remaining
+   parts. Its claims are verified node by node as before. If every part came from the graph, there is no draft
+   and no judge or probe call at all.
+4. **Coverage check:** a part that still has no verified answer becomes an "unverified" node. The answer says
+   it could not verify that part, and confidence cannot be "high".
+
+A drafted claim that clashes with a graph answer is dropped. One that repeats a graph answer is not
+re-checked.
+
+Costs and limits:
+- **One extra model call** per factual question (the split). It saves the draft and every judge and probe
+  call when the graph covers the question.
+- **Lookups follow direct edges only:** "which continent is Warsaw in" finds Poland, not Europe. Yes/no
+  checks do use transitive relations.
+- **Matching depends on relation names:** a drafted answer counts for a part only if its relation matches
+  the part's (same name, or a shared word). The drafter is told to keep the part's relation names.
+- **Measure it:** `python -m app.bench --ablate full,no_graph_first`.
 
 ### Number tracing
 
@@ -137,7 +169,7 @@ Fewer tokens, with no check that catches a hallucination skipped (`engine/compre
 | `python -m app.audit [--fail-on error]` | graph audit: functional violations, incompatible pairs, cycles, near-duplicates, provenance, staleness, relation drift, dangling caches |
 | `python -m app.recheck` | re-validate cached paths and reasoning states; drop expired claims; prune old state |
 | `python -m app.bench --load-synthetic` | load the fictional benchmark knowledge base (`--unload-synthetic` removes it) |
-| `python -m app.bench [--ablate full,no_graph,no_compression,...] [--repeats 3] [--train]` | benchmark (familiar, synthetic, realistic and real-world sets) with Wilson intervals, ablations and router train/test split; writes `results/` |
+| `python -m app.bench [--ablate full,no_graph,no_graph_first,no_compression,...] [--repeats 3] [--train]` | benchmark (familiar, synthetic, realistic and real-world sets) with Wilson intervals, ablations and router train/test split; writes `results/` |
 | `python -m app.bench --report` | methodology, tables and caveats of the latest run |
 | `python -m app.bench_taxonomy [--fallback-only]` | classifier accuracy on the development set and two held-out sets, with a confusion matrix |
 | `python -m app.scale --backend neo4j --sizes 1000,10000,...` | AuraDB scale test (tagged, cleaned up, refuses to touch other data) |

@@ -22,6 +22,9 @@ GUARD_EXTRACT = "List the atomic factual claims"
 # Compression (c): by default a similar question's facts are "not enough on their own", so tests that do not
 # exercise compression run the full procedure; compression tests script it explicitly.
 STATE_ANSWER = "Answer the question using ONLY the numbered verified facts"
+# Graph-first: by default a question is not split into parts, so tests that do not exercise it see the plain
+# draft-and-verify walk; graph-first tests script the plan explicitly.
+PLAN = "Split the question into the facts it asks for"
 
 
 @pytest.fixture(autouse=True)
@@ -39,7 +42,8 @@ class FakeLLM:
 
     def __init__(self, monkeypatch):
         self.handlers = {}
-        self.defaults = {GUARD_EXTRACT: lambda u, t: {"claims": []}, STATE_ANSWER: lambda u, t: {"answerable": False}}
+        self.defaults = {GUARD_EXTRACT: lambda u, t: {"claims": []}, STATE_ANSWER: lambda u, t: {"answerable": False},
+                         PLAN: lambda u, t: {"parts": []}}
         self.calls = []
         self.prompts = {}
         from app import llm

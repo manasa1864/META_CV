@@ -5,6 +5,32 @@ Numbers here are measured. Anything that needs the real model, or a real AuraDB 
 
 ## 2026-11-01
 
+### Graph-first answers in the factual tier
+- **The gap:** the model chose which facts to claim, and the graph only checked them, so an answer could be
+  fully verified but incomplete. "Who are the characters in Pride and Prejudice?" could name two of the four
+  stored characters at "high" confidence.
+- **Now** (`engine/decompose.py`):
+  - **Split:** the question is split into parts (lookups, yes/no checks, and parts that build on an earlier
+    part's answer).
+  - **Graph first:** each part the graph can answer is answered from the graph, with every stored value.
+  - **Draft the rest:** the model drafts only the parts that are left, and those are verified as before.
+  - **Report gaps:** any part still unanswered becomes an "unverified" gap that the answer reports, and it
+    keeps confidence below "high".
+  - **Also used by mixed questions:** their premises go through the same walk.
+- **Benchmark ablation:** `no_graph_first`.
+- **Tested** (`tests/test_graph_first.py`, 7 tests):
+  - a three-part question answered with no draft and no judge or probe call;
+  - all four characters returned;
+  - only the missing part drafted, and a repeated graph answer not re-checked;
+  - an unanswered part reported, and confidence capped at "medium";
+  - a yes/no part the graph contradicts comes back corrected;
+  - the ablation flag turns it off;
+  - defensive plan parsing.
+- **Changed:** `test_stream_endpoint` now expects 5 model calls instead of 4 (the split is the new one).
+  Every other earlier test passes unchanged. The scripted demo answers its multi-fact example from the graph alone.
+- **Not measured yet:**
+  - completeness and token cost on real questions. Run `python -m app.bench --ablate full,no_graph_first` with the model.
+
 ### Number tracing in the reasoning and consistency tiers
 - **The gap:** the arithmetic check only proved `expression = result`. A correct calculation on an invented number passed.
   - Example: `1921 - 1897 = 24` for Einstein's age, when the verified premise says 1879.

@@ -36,6 +36,13 @@ def script(system, user, temperature=0):
         follow_up = user.split("Follow-up:")[-1].strip()
         return {"answerable": False, "standalone": follow_up,
                 "standalone_type": "reasoning" if any(ch.isdigit() for ch in follow_up) else "factual"}
+    if system.startswith("Split the question into the facts it asks for"):
+        q = user.split("Question:")[-1].lower()
+        if "pride and prejudice" in q and "wrote" in q:  # the multi-fact example: answered from the graph alone
+            return {"parts": [{"subject": "pride and prejudice", "relation": "written_by", "object": "?"},
+                              {"subject": "pride and prejudice", "relation": "published_in", "object": "?"},
+                              {"subject": "#1", "relation": "born_in", "object": "?"}]}
+        return {"parts": []}
     if system.startswith("Answer the question as a chain"):
         return {"claims": [
             {"subject": "pride and prejudice", "relation": "written_by", "object": "jane austen", "depends_on": []},

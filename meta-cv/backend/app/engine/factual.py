@@ -1,5 +1,9 @@
 """Factual tier: answer as a path of atomic claims and walk it node by node.
 
+Graph first (decompose.py): the question is split into the parts it asks for, and every part the graph
+can answer is answered from the graph alone - every stored value, nothing left to the model. Only the
+remaining parts are drafted, and a part that still has no verified answer is reported as a gap.
+
 A node is accepted only after it is checked, and the walk moves on only from
 accepted nodes:
   1. graph     - the knowledge graph supports it (directly or by transitivity),
@@ -22,7 +26,7 @@ import time
 from .. import config, llm, state_cache
 from ..db import connect
 from ..graph_common import EXCLUSIVE_RELATIONS
-from . import compression, guardrails
+from . import compression, decompose, guardrails
 from .router import caught
 from .trace import Trace
 
@@ -158,10 +162,11 @@ def _clash(store, c: dict, other: dict) -> str | None:
 
 
 def _check_conflicts(store, node: dict, checked: list[dict], earlier: list[dict], trace: Trace, label: str,
-                     found: list[dict]):
-    """Generator: an accepted node that clashes with an earlier node or an earlier turn is dropped,
-    unless the graph backs it and the other side does not."""
+                     found: list[dict], answered: list[dict] = ()):
+    """Generator: an accepted node that clashes with an earlier node, an earlier turn or a part answered
+    from the graph is dropped, unless the graph backs it and the other side does not."""
     pool = [(e, "faithful.context", "established earlier in this conversation") for e in earlier]
+    pool += [(a, "factual.relation_error", f"answered from the graph (part {a['part'] + 1})") for a in answered]
     pool += [(x, "factual.relation_error", f"node {i + 1} of this answer") for i, x in enumerate(checked)
              if x["status"] == "accepted"]
     for other, risk, where in pool:
@@ -293,6 +298,18 @@ def walk(store, question: str, entities: list[str], trace: Trace, prior: dict | 
                          + (" and " if prior and earlier else "") + ("earlier in this conversation" if earlier else "")
                          + " - already-verified nodes skip their checks.", "ok")
 
+    parts, answered, open_parts = [], [], []
+    if decompose.enabled():
+        parts = yield from decompose.plan(store, question, entities, trace)
+        if parts:
+            answered, open_parts = yield from decompose.fill(store, parts, trace)
+    if parts and not open_parts:
+        yield trace.note("graph", "Every part answered from the graph",
+                         f"{len(answered)} stored fact(s) answer all {len(parts)} part(s) - nothing was left to the model, "
+                         "so there is no draft to check.", "ok")
+        return answered, _caught_by_checks(answered)
+    focus = decompose.focus_text(parts, open_parts, answered) if parts else None
+
     all_relations = store.relation_names()
     trim = compression.enabled()
     if trim:
@@ -303,37 +320,65 @@ def walk(store, question: str, entities: list[str], trace: Trace, prior: dict | 
     else:
         shown, cut, relations, cut_relations = known[:80], [], all_relations, []
 
-    checked, found = yield from _draft_and_check(store, question, shown, relations, earlier, trace, verified_only)
+    checked, found = yield from _draft_and_check(store, question, shown, relations, earlier, trace, verified_only,
+                                                 answered, focus)
     lost = compression.context_lost(checked, cut, cut_relations) if trim else None
     if lost:
         yield trace.note("compression", "Context check: trimming may have hidden something",
                          f"{lost}. Redrafting with every known fact and relation.", "warn")
         compression.record(redrafted=True, redraft_reason=lost)
         checked, found = yield from _draft_and_check(store, question, known[:80], all_relations, earlier, trace,
-                                                     verified_only)
+                                                     verified_only, answered, focus)
     elif trim and (cut or cut_relations):
         yield trace.note("compression", "Context check passed",
                          f"{len(shown)} of {len(known)} known facts and {len(relations)} of {len(all_relations)} relation "
                          "names were shown; every claim that relies on the cut ones was verified against the full graph.",
                          "ok")
-    return checked, found
+
+    merged, seen = list(answered), {triple(a) for a in answered}
+    for c in checked:  # a drafted claim the graph corrected can land on a graph answer: keep each fact once
+        if c.get("dup") or (c["status"] == "accepted" and triple(c) in seen):
+            continue
+        if c["status"] == "accepted":
+            seen.add(triple(c))
+        merged.append(c)
+    checked = merged
+    if parts:
+        missing_parts = decompose.gaps(parts, checked)
+        if missing_parts:
+            yield trace.note("graph", "Coverage check: some parts have no verified answer",
+                             f"{len(parts) - len(missing_parts)} of {len(parts)} part(s) answered; not answered: "
+                             + "; ".join(g["part_text"] for g in missing_parts) + ". The answer will say so.", "warn")
+        else:
+            yield trace.note("graph", "Coverage check passed",
+                             f"Every one of the {len(parts)} part(s) has a verified answer.", "ok")
+        checked += missing_parts
+    return checked, _caught_by_checks(answered) + found
 
 
 def _draft_and_check(store, question: str, shown: list[dict], relations: list[str], earlier: list[dict],
-                     trace: Trace, verified_only: bool):
-    """Generator: draft the claim path from the shown context and verify it node by node against the full graph."""
-    ev = trace.start("factual", "Drafting the answer as a path of claims")
+                     trace: Trace, verified_only: bool, answered: list[dict] = (), focus: str | None = None):
+    """Generator: draft the claim path from the shown context and verify it node by node against the full graph.
+
+    answered / focus: parts the graph already answered, and the parts still needed (graph-first)."""
+    ev = trace.start("factual", "Drafting the parts the graph could not answer" if focus
+                     else "Drafting the answer as a path of claims")
     yield ev
     known_txt = "\n".join(f"- {f['subject']} | {f['relation']} | {f['object']}" for f in shown) or "(none)"
     claims = _parse_claims(llm.chat_json(
         DRAFT_SYSTEM, f"KNOWN FACTS:\n{known_txt}\n\nRelations in use: {relations}\n\nQuestion: {question}"
+        + (f"\n\n{focus}" if focus else "")
     ))
     yield trace.settle(ev, "ok" if claims else "fail", f"{len(claims)} node(s) to verify, in order")
 
+    by_triple = {triple(a): a for a in answered}
     checked: list[dict] = []
     found: list[dict] = []
     for i, c in enumerate(claims):
         label = f"Node {i + 1}/{len(claims)}"
+        if triple(c) in by_triple:  # the draft repeated a graph answer: already verified, kept once
+            checked.append({**by_triple[triple(c)], "depends_on": c["depends_on"], "dup": True})
+            continue
         broken = [d for d in c["depends_on"] if checked[d]["status"] != "accepted"]
         if broken:
             yield trace.note("factual", f"{label}: {_fmt(c)}",
@@ -342,7 +387,7 @@ def _draft_and_check(store, question: str, shown: list[dict], relations: list[st
             continue
         node = yield from verify_node(store, c, trace, label, verified_only)
         if node["status"] == "accepted":
-            node = yield from _check_conflicts(store, node, checked, earlier, trace, label, found)
+            node = yield from _check_conflicts(store, node, checked, earlier, trace, label, found, answered)
         checked.append(node)
     return checked, _caught_by_checks(checked) + found
 
@@ -412,7 +457,8 @@ def answer(store, question: str, entities: list[str], trace: Trace, prior: dict 
     yield ev
     if accepted:
         facts = "\n".join(f"- {c['subject']} {c['relation'].replace('_', ' ')} {c['object']}" for c in accepted)
-        gaps = "\n".join(f"- {c['subject']} {c['relation'].replace('_', ' ')} ?" for c in missing) or "(none)"
+        gaps = "\n".join(f"- {c.get('part_text') or c['subject'] + ' ' + c['relation'].replace('_', ' ') + ' ?'}"
+                         for c in missing) or "(none)"
         fixes = "\n".join(f"- earlier: {_fmt(c['corrects'])}; now verified: {_fmt(c)}" for c in accepted if c.get("corrects"))
         prompt = (f"Question: {question}\n\nVerified facts:\n{facts}\n\nCould not verify:\n{gaps}"
                   + (f"\n\nCorrections to earlier answers:\n{fixes}" if fixes else ""))
