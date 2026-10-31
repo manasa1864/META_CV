@@ -168,6 +168,7 @@ export type Status = {
   router_frozen: boolean
   scripted?: boolean
   backend: string
+  writes?: 'open' | 'token' | 'closed' // admin writes: open (development), need a token, or closed (judge mode)
 }
 export const getStatus = () => getJson<Status>('/api/status')
 
@@ -297,3 +298,70 @@ export type Metrics = {
 }
 
 export const getMetrics = () => getJson<Metrics>('/api/metrics')
+
+// ---------------------------------------------------------------- review (admin writes)
+export type ReviewItem = {
+  id: number
+  subject: string
+  relation: string
+  object: string
+  source: string | null
+  reason: string
+  created_at: number
+}
+export type QuarantineItem = ReviewItem
+export type RuleProposal = {
+  relation: string
+  functional: number
+  transitive: number
+  confidence: number
+  rationale: string | null
+  created_at: number
+}
+
+export const getReviewQueue = () => getJson<ReviewItem[]>('/api/review')
+export const getQuarantine = () => getJson<QuarantineItem[]>('/api/quarantine')
+export const getPendingRules = () => getJson<RuleProposal[]>('/api/rules/pending')
+
+const TOKEN_KEY = 'prism-admin-token'
+
+/** The admin token for this tab only (sessionStorage), when the server requires one. */
+export function adminToken(): string {
+  try {
+    return sessionStorage.getItem(TOKEN_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+export function setAdminToken(token: string) {
+  try {
+    if (token) sessionStorage.setItem(TOKEN_KEY, token)
+    else sessionStorage.removeItem(TOKEN_KEY)
+  } catch {
+    /* private mode: the token just has to be entered again */
+  }
+}
+
+/** A write to an admin endpoint. Throws with the server's message on failure (403 = token missing or wrong). */
+export async function adminWrite<T = Record<string, unknown>>(
+  url: string,
+  method: 'POST' | 'DELETE' = 'POST',
+  body?: unknown,
+): Promise<T> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const token = adminToken()
+  if (token) headers['X-Admin-Token'] = token
+  const res = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) })
+  if (!res.ok) {
+    let msg = `server returned ${res.status}`
+    try {
+      const d = await res.json()
+      msg = d.detail || d.message || msg
+    } catch {
+      /* not JSON */
+    }
+    throw new Error(msg)
+  }
+  return res.json()
+}

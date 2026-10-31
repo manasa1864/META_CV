@@ -5,6 +5,14 @@ Numbers here are measured. Anything that needs the real model, or a real AuraDB 
 
 ## 2026-11-01
 
+### Review page
+- **New tab `/review`** (`frontend/src/Review.tsx`). It shows three lists:
+  - facts confirmed by Wikidata or the model checks (accept into the graph through the write gate, or reject);
+  - writes the gate quarantined, with the reason (release anyway, or discard);
+  - proposed relation rules (adjust single-valued / transitive, then approve or reject).
+- **Access:** `/status` now reports `writes` (open / token / closed). Token mode asks for the admin token, which is kept only for the browser tab; judge mode shows the lists read-only.
+- **Tested:** `tests/test_review_api.py` (3 tests); every action clicked through in the browser against the demo.
+
 ### Independent checks: Wikidata evidence and a separate judge model
 - **The gap:** a claim the graph did not hold was judged only by the model that drafted it, so its mistakes
   repeated across the draft, the judge and the probe.

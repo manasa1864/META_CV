@@ -30,6 +30,7 @@ import './App.css'
 
 const MetricsView = lazy(() => import('./Metrics'))
 const ResultsView = lazy(() => import('./Results'))
+const ReviewView = lazy(() => import('./Review'))
 
 type Phase = 'thinking' | 'answering' | 'done' | 'error'
 type BloopMood = 'greeting' | 'thinking' | 'supported' | 'uncertain'
@@ -59,7 +60,7 @@ type Assistant = {
   retry?: string
 }
 type Message = { id: number; role: 'user'; text: string } | Assistant
-type View = 'chat' | 'metrics' | 'results'
+type View = 'chat' | 'metrics' | 'results' | 'review'
 
 const INTRO_KEY = 'prism-intro-autoplay'
 
@@ -1231,7 +1232,11 @@ function Settings({
   )
 }
 
-const pathView = (): View => (window.location.pathname.replace(/\/+$/, '') === '/results' ? 'results' : 'chat')
+const PATHS: Partial<Record<View, string>> = { results: '/results', review: '/review' }
+const pathView = (): View => {
+  const path = window.location.pathname.replace(/\/+$/, '')
+  return (Object.keys(PATHS) as View[]).find((v) => PATHS[v] === path) ?? 'chat'
+}
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false }
@@ -1306,11 +1311,11 @@ function PrismApp() {
   }, [])
 
   useEffect(() => {
-    document.title = view === 'results' ? 'Prism · Results' : view === 'metrics' ? 'Prism · Metrics' : 'Prism · verified answers'
+    document.title = view === 'chat' ? 'Prism · verified answers' : `Prism · ${view[0].toUpperCase()}${view.slice(1)}`
   }, [view])
 
   function setView(next: View) {
-    const path = next === 'results' ? '/results' : '/'
+    const path = PATHS[next] ?? '/'
     if (window.location.pathname !== path) window.history.pushState(null, '', path)
     setViewState(next)
   }
@@ -1480,6 +1485,9 @@ function PrismApp() {
             <Button className={view === 'results' ? 'active' : ''} onClick={() => setView('results')}>
               Results
             </Button>
+            <Button className={view === 'review' ? 'active' : ''} onClick={() => setView('review')}>
+              Review
+            </Button>
           </nav>
           {evidence && (
             <span className="evidence-on">
@@ -1506,6 +1514,14 @@ function PrismApp() {
         <main className="metrics-view">
           <Suspense fallback={<div className="metrics"><p className="card-note">Loading…</p></div>}>
             <ResultsView />
+          </Suspense>
+        </main>
+      )}
+
+      {view === 'review' && (
+        <main className="metrics-view">
+          <Suspense fallback={<div className="metrics"><p className="card-note">Loading…</p></div>}>
+            <ReviewView />
           </Suspense>
         </main>
       )}

@@ -153,7 +153,9 @@ def status():
     llm_status = {"configured": True, "breaker_open": False} if config.SCRIPTED_DEMO else llm.status()
     return {"llm": llm_status, "scripted": config.SCRIPTED_DEMO, "degraded": getattr(store, "degraded", None),
             "health": health.state(), "judge_mode": config.JUDGE_MODE, "router_frozen": config.ROUTER_FROZEN,
-            "backend": store.backend}
+            "backend": store.backend,
+            # how admin writes (review, quarantine, rules) work here - mirrors require_admin
+            "writes": "token" if config.ADMIN_TOKEN else "closed" if config.JUDGE_MODE else "open"}
 
 
 # ------------------------------------------------------------------------------------- graph

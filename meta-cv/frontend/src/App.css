@@ -102,3 +102,34 @@
   .results h1 { font-size: 22px; }
   .banner { font-size: 13px; }
 }
+
+/* Review page */
+.review h1 { font-size: 40px; color: var(--ink); }
+.review-section { margin-bottom: 14px; }
+.review-count { display:inline-grid; place-items:center; min-width:26px; height:26px; padding:0 8px; margin-left:6px; border-radius:99px; background:var(--lav-tint); color:var(--lav-deep); font:600 13px Figtree, sans-serif; vertical-align:middle; }
+.review-row { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 0; border-top:1px solid var(--line); }
+.review-main { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.review-main small { font-size:12px; color:var(--muted); line-height:1.45; word-break:break-word; }
+.review-main .review-why { color:var(--pink-deep); }
+.review-fact { font-size:15px; color:var(--ink); word-break:break-word; }
+.review-fact b { font-weight:600; }
+.review-fact i { font-style:normal; color:var(--lav-deep); background:var(--lav-tint); padding:1px 8px; border-radius:99px; font-size:13px; margin:0 2px; }
+.review-actions { display:flex; gap:8px; flex:none; }
+.review-primary { border:0; border-radius:99px; padding:7px 14px; font-size:13px; font-weight:600; color:#fff; background:var(--grad); }
+.review-primary:disabled, .review .ghost:disabled { opacity:.5; cursor:default; }
+.review-outcome { flex:none; max-width:45%; margin:0; font-size:13px; font-weight:500; text-align:right; }
+.review-outcome.ok { color:var(--blue-deep); }
+.review-outcome.warn { color:var(--lav-deep); }
+.review-outcome.fail { color:var(--pink-deep); }
+.review-empty { margin:0; padding:10px 0 2px; font-size:14px; color:var(--muted); border-top:1px solid var(--line); }
+.review-flags { display:flex; gap:16px; margin-top:4px; font-size:13px; color:var(--ink-2); }
+.review-flags label { display:flex; align-items:center; gap:6px; }
+.review-flags input { accent-color: var(--accent); }
+.review-banner { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin:0 0 14px; padding:12px 16px; border-radius:14px; background:var(--lav-tint); color:var(--lav-deep); font-size:14px; }
+.review-token input { flex:1; min-width:160px; height:34px; padding:0 12px; border:1px solid var(--line); border-radius:99px; background:var(--card); color:var(--ink); }
+
+@media (max-width:640px) {
+  .review-row { flex-direction:column; align-items:stretch; }
+  .review-actions { justify-content:flex-end; }
+  .review-outcome { max-width:none; text-align:left; }
+}

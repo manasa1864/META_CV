@@ -6,12 +6,13 @@ An adaptive chatbot that tries to prevent hallucinations by design.
 - **Checking:** nothing is said until it has been checked, and the system stops instead of guessing when it cannot verify.
 - **Learning:** every outcome is logged, so the router learns which tier works.
 - **Live trace:** the UI (Prism, with Bloop) streams every check ("See the thinking"), then the answer and its evidence.
+- **Review page** (`/review`): facts confirmed outside the graph, writes the graph quarantined, and proposed relation rules wait there to be accepted, released, discarded, approved or rejected. Writes follow `ADMIN_TOKEN` / judge mode (`/status` reports `writes`).
 
 ```
 META/                        (the repository root)
 └── meta-cv/
     ├── backend/             FastAPI app: graph stores, verification engine, LLM client, tools, tests
-    ├── frontend/            React + Vite UI: chat, metrics, results page
+    ├── frontend/            React + Vite UI: chat, metrics, results and review pages
     ├── bench_data/          benchmark and taxonomy question sets (JSON)
     ├── results/             measured benchmark / scale / taxonomy results (committed)
     ├── replays/             recorded real runs for Replay mode (committed)
