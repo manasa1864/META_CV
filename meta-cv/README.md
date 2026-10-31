@@ -55,10 +55,11 @@ question (+ conversation)
   -> refuse if the last audit found a conflict about these entities           audit.py
   -> tier
        factual      claims verified node by node: graph, then judge + blind probe     engine/factual.py
-       reasoning    arithmetic machine-checked, logic checked, backtracking,
-                    independent solutions must agree                                  engine/reasoning.py
-       consistency  from what the conversation verified; derived numbers must
-                    pass the arithmetic check, or it re-asks a standalone question    engine/memory.py
+       reasoning    arithmetic machine-checked, every number traced to its source,
+                    logic checked, backtracking, independent solutions must agree    engine/reasoning.py
+       consistency  from what the conversation verified; derived numbers must pass
+                    the arithmetic check and trace to the cited statements, or it
+                    re-asks a standalone question                                     engine/memory.py
        mixed        facts first, then the calculation from those verified premises   engine/planner.py
   -> faithfulness guard: names, numbers and claims in the answer must come
      from verified facts; regenerate once, else print the verified facts verbatim     engine/guardrails.py
@@ -91,6 +92,23 @@ The system answers "I can't answer this reliably" (and says why) when:
 5. **budget:** the per-question budget (LLM calls, tokens, graph queries) ran out.
 
 A global breaker switches to **verified-only mode** when recent answers are mostly rejections, or when the model or graph keep failing. In that mode only graph facts count, and a banner says so.
+
+### Number tracing
+
+The arithmetic check proves `expression = result`. It cannot see that `1921 - 1897 = 24` uses the wrong birth year.
+So every number a reasoning step uses must come from one of these sources (`mathcheck.untraced_number`):
+- the question, or the verified premises handed to it;
+- an answer this conversation already verified;
+- an earlier machine-checked step;
+- a small everyday constant (0-10, 12, 24, 52, 60, 100, 360, 365, 366, 1000, 3600).
+
+Number words ("twelve", "a dozen", "half") count, and a source percentage also counts as 0.15, 1.15 or 0.85.
+A number stated in a step's text with no checked expression must trace too, so arithmetic cannot hide in prose.
+A number from a *similar* problem's verified steps does not count: those steps are only a template.
+An untraced number is a contradiction like any other: the solver goes back to that step.
+This runs in every mode, including aggressive, where the model logic check is off.
+
+Trade-off: an invented number that happens to equal an everyday constant (say 7) still passes.
 
 ### Router learning
 

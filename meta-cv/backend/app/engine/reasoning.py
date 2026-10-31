@@ -2,6 +2,9 @@
 
 Per solution:
   - every arithmetic step is machine-checked (expression vs. claimed result)
+  - every number a step uses is traced to the question, a verified premise or an earlier
+    checked step (mathcheck.untraced_number), so a correct calculation on an invented
+    number is caught
   - a separate checker looks for the first step that does not follow logically
   - on a contradiction the solver goes back to that step and redoes it from there,
     keeping the steps before it
@@ -102,8 +105,12 @@ def _prior_txt(prior: dict) -> str:
             f"Its verified steps:\n{_steps_txt(s['steps'])}\nIts answer: {s['final_answer']}")
 
 
-def solve_once(question: str, cfg: dict, trace: Trace, label: str, temperature: float, prior: dict | None = None):
-    """Generator: one solution, checked and backtracked. Returns the solution with verified flag."""
+def solve_once(question: str, cfg: dict, trace: Trace, label: str, temperature: float, prior: dict | None = None,
+               sources: str | None = None):
+    """Generator: one solution, checked and backtracked. Returns the solution with verified flag.
+
+    sources: text every number must trace to (defaults to the question, which includes any verified premises)."""
+    sources = question if sources is None else sources
     ev = trace.start("reasoning", f"{label}: solving step by step" + (" (adapting a verified similar solution)" if prior else ""))
     yield ev
     sol = _parse_solution(llm.chat_json(SOLVE_SYSTEM, f"Problem: {question}" + (_prior_txt(prior) if prior else ""),
@@ -117,10 +124,12 @@ def solve_once(question: str, cfg: dict, trace: Trace, label: str, temperature: 
         yield ev
         bad = first_arithmetic_error(sol["steps"])
         kind = "arithmetic"
+        if bad is None:
+            bad, kind = mathcheck.untraced_number(sol["steps"], sources), "number tracing"
         if bad is None and cfg["logic_check"]:
             bad, kind = _logic_check(question, sol), "logic"
         if bad is None:
-            what = "arithmetic machine-checked" + (", logic checked independently" if cfg["logic_check"] else "")
+            what = "arithmetic machine-checked, every number traced to its source" +                 (", logic checked independently" if cfg["logic_check"] else "")
             yield trace.settle(ev, "ok", f"No contradictions ({what}).")
             return {**sol, "verified": True, "backtracks": backtracks, "fixes": fixes}
 
@@ -191,6 +200,9 @@ def answer(question: str, mode: str, trace: Trace, prior: dict | None = None, ea
     """
     cfg = MODES[mode]
     problem = question + (premises_txt(premises) if premises else "")
+    # Numbers may also come from answers this conversation already verified ("double that"), never from a
+    # similar problem's steps: those are a template, and their numbers belong to another question.
+    sources = problem + "".join(f"\n{e['final_answer']}" for e in earlier or [])
     yield trace.note("reasoning", f"Mode: {mode}",
                      f"{cfg['samples']} independent solution(s) (up to {cfg['max_samples']}), agreement: "
                      f"{cfg['agreement']}, logic check: {'on' if cfg['logic_check'] else 'off'}, "
@@ -205,7 +217,7 @@ def answer(question: str, mode: str, trace: Trace, prior: dict | None = None, ea
                          "adapted solution is machine-checked and logic-checked; if it passes, the independent "
                          "cross-check solutions are skipped.")
         sol = yield from solve_once(problem, {**cfg, "logic_check": True, "max_backtracks": 1}, trace,
-                                    "Adapted solution", 0, prior)
+                                    "Adapted solution", 0, prior, sources)
         if sol["verified"] and INSUFFICIENT not in sol["final_answer"].lower():
             template, winner = sol, answer_key(sol["final_answer"])
             solutions.append(sol)
@@ -221,7 +233,7 @@ def answer(question: str, mode: str, trace: Trace, prior: dict | None = None, ea
     while template is None and len(solutions) < cfg["max_samples"]:
         n = len(solutions)
         sol = yield from solve_once(problem, cfg, trace, f"Solution {n + 1}", 0 if n == 0 else 0.7,
-                                    prior if n == 0 else None)
+                                    prior if n == 0 else None, sources)
         solutions.append(sol)
         if len(solutions) < cfg["samples"]:
             continue

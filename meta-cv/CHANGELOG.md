@@ -3,6 +3,28 @@
 Numbers here are measured. Anything that needs the real model, or a real AuraDB run at size, is marked
 **not measured yet** until someone runs it.
 
+## 2026-11-01
+
+### Number tracing in the reasoning and consistency tiers
+- **The gap:** the arithmetic check only proved `expression = result`. A correct calculation on an invented number passed.
+  - Example: `1921 - 1897 = 24` for Einstein's age, when the verified premise says 1879.
+  - In aggressive mode no logic check runs, so nothing else caught it.
+  - Arithmetic written only in a step's text skipped the check entirely.
+- **Now:** every number a step uses must trace to one of:
+  - the question or the verified premises;
+  - an answer this conversation verified;
+  - an earlier machine-checked step;
+  - a small everyday constant.
+
+  An untraced number sends the solver back to that step, with the reason. The consistency tier's calculations must trace to the question and the statements they cite.
+- **Tested** (`tests/test_number_tracing.py`, 8 tests):
+  - the Einstein case is caught in aggressive mode and corrected by the backtrack;
+  - arithmetic hidden in text is caught;
+  - number words, percentages, rounded earlier results and an earlier turn's verified answer all trace;
+  - a consistency calculation with an invented year is rejected.
+  - All earlier tests pass unchanged.
+- **Not measured yet:** how often it fires on real model output, and its false-positive rate there. Run the benchmark with the model.
+
 ## 2026-10-31 (later)
 
 ### Keyword fallback: general cue groups, measured on held-out data
