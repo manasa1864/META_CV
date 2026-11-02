@@ -44,12 +44,44 @@ def latest_results() -> dict | None:
     return out
 
 
+def _safety(rows: list[dict]) -> dict:
+    """Live safety numbers: what the checks saw in answered questions, facts the write gate held back for
+    instruction-like text, and refusals that never became a turn (rate limit, other-site posts, ...)."""
+    seen = [json.loads(r["safety"]) for r in rows if r.get("safety")]
+    patterns: Counter = Counter(p for s in seen for p in s.get("injection", []))
+    kinds: Counter = Counter(k for s in seen for k in s.get("private_data", []))
+    with connect() as conn:
+        quarantined = conn.execute("SELECT COUNT(*) FROM quarantine WHERE reason LIKE '%instruction-like%'").fetchone()[0]
+        events = {r["kind"]: r["n"] for r in conn.execute("SELECT kind, SUM(count) AS n FROM safety_events GROUP BY kind")}
+    from . import safety as safety_mod, source_trust  # noqa: PLC0415
+
+    with connect() as conn:
+        held = conn.execute("SELECT COUNT(*) FROM review_queue WHERE reason LIKE 'source ''%'' is often contradicted%'"
+                            ).fetchone()[0]
+    return {
+        "answers_steered": sum(bool(s.get("steered")) for s in seen),
+        "tainted_claims": sum(s.get("tainted_claims", 0) for s in seen),
+        "facts_held_low_trust": held,
+        "adversarial_policy": router.adversarial_policy(),
+        "sources": source_trust.table(10),
+        "questions_checked": len(seen),
+        "injection_questions": sum(bool(s.get("injection")) for s in seen),
+        "injection_patterns": dict(patterns.most_common()),
+        "private_data_questions": sum(bool(s.get("private_data")) for s in seen),
+        "private_data_kinds": dict(kinds.most_common()),
+        "facts_ignored": sum(s.get("ignored_facts", 0) for s in seen),
+        "facts_quarantined": quarantined,
+        "answers_withheld": sum(bool(s.get("withheld")) for s in seen),
+        "refused": {k: events.get(k, 0) for k in safety_mod.EVENTS},
+    }
+
+
 def summary() -> dict:
     with connect() as conn:
         rows = [dict(r) for r in conn.execute(
             "SELECT id, hallucination_type, tier, from_cache, reused_state, caught, prompt_tokens, completion_tokens, "
             "saved_tokens, source, outcome, signal_quality, correct, feedback, confidence, stopped, reuse_kind, "
-            "compression_context FROM turns "
+            "compression_context, safety FROM turns "
             "WHERE source NOT IN ('scale', 'loadtest', 'replay') ORDER BY id"
         )]
     for r in rows:
@@ -64,7 +96,7 @@ def summary() -> dict:
     for r in rows:
         for c in r["caught"]:
             fam = c.get("type") or router.family(c.get("risk", ""))
-            if fam in by_family and c["action"] in ACTIONS:
+            if fam in by_family and c["action"] in ACTIONS and not str(c.get("risk", "")).startswith("adversarial."):
                 by_family[fam][c["action"]] += 1
             by_risk[c.get("risk") or fam] += 1
 
@@ -109,6 +141,7 @@ def summary() -> dict:
     stops = Counter(json.loads(r["stopped"])["reason"] for r in rows if r["stopped"])
     graph = audit.last_result()
     return {
+        "safety": _safety(rows),
         "totals": {
             "queries": len(rows),
             "cache_hits": sum(r["from_cache"] for r in rows),

@@ -115,6 +115,12 @@ BREAKER_MIN_TURNS = _int("BREAKER_MIN_TURNS", 8)
 BREAKER_REJECT_RATE = _num("BREAKER_REJECT_RATE", 0.6)
 BREAKER_ERROR_RATE = _num("BREAKER_ERROR_RATE", 0.5)
 
+# Safety mechanisms that use this system's verified claims (README "Safety beyond hallucination"):
+INVARIANCE_CHECK = _flag("INVARIANCE_CHECK", True)       # flagged questions are re-answered without the instructions
+ADVERSARIAL_ROUTING = _flag("ADVERSARIAL_ROUTING", True)  # learned normal-vs-verified-only policy for flagged questions
+SOURCE_TRUST_MIN_FACTS = _int("SOURCE_TRUST_MIN_FACTS", 3)  # facts checked before a source's record counts
+SOURCE_TRUST_FLOOR = _num("SOURCE_TRUST_FLOOR", 0.5)       # below this, an untrusted source's new facts go to review
+
 # Set only by demo_server.py: the model is a scripted stand-in, and the UI must say so
 SCRIPTED_DEMO = _flag("SCRIPTED_DEMO")
 

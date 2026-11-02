@@ -343,6 +343,13 @@ def verify_node(store, c: dict, trace: Trace, label: str, verified_only: bool = 
     if m["verdict"] == "true" and m["confidence"] >= 0.7 and m["probe_matched"]:
         accepted = {**c, "status": "accepted", "source": "model",
                     "reason": f"independent check and blind probe agree ({judge})"}
+        if safety.user_asserted(c):  # provenance taint: the question itself stated this claim
+            safety.count("tainted_claims")
+            yield trace.settle(ev, "ok", f"Not in graph; check ({judge}) says true ({m['confidence']:.2f}) and blind probe "
+                                         f"independently gave '{probe}'. Accepted for this answer only: the value comes "
+                                         "from the question and only model checks back it, so it is not cached or queued "
+                                         "for the graph (provenance taint).")
+            return {**accepted, "taint": "user"}
         state_cache.put(claim_key(c), {"status": "accepted", "checked_at": time.time()},
                         ttl=config.CLAIM_TTL_HOURS * 3600, triples=[triple(c)])
         _queue_for_review(c)
@@ -389,6 +396,7 @@ def walk(store, question: str, entities: list[str], trace: Trace, prior: dict | 
     if unsafe:  # written before the write gate checked for it, or straight into the store
         known = [f for f in known if not safety.fact_signals(f)]
         seen.difference_update((f["subject"], f["relation"], f["object"]) for f in unsafe)
+        safety.count("ignored_facts", len(unsafe))
         yield trace.note("safety", "Ignored stored facts that contain instructions",
                          f"{len(unsafe)} fact(s) about {', '.join(sorted({f['subject'] for f in unsafe}))} carry "
                          "instruction-like text, so they are not shown to the model or used (prompt-injection risk).",
@@ -588,6 +596,7 @@ def answer(store, question: str, entities: list[str], trace: Trace, prior: dict 
     for c in checked:  # a claim carrying instructions never reaches the composer, however it was verified
         if c["status"] == "accepted" and safety.fact_signals(c):
             c.update(status="rejected", reason="contains instruction-like text (prompt-injection risk)")
+            safety.count("ignored_facts")
     accepted = [c for c in checked if c["status"] == "accepted"]
     ended = [c for c in checked if c.get("ended")]
     missing = [c for c in checked if c["status"] != "accepted" and not c.get("ended")]
@@ -625,6 +634,6 @@ def answer(store, question: str, entities: list[str], trace: Trace, prior: dict 
         "path": checked,
         "caught": found,
         "withheld": sum(c["status"] == "unverified" for c in checked),
-        "cacheable": bool(accepted) and not missing and not time_sensitive,
+        "cacheable": bool(accepted) and not missing and not time_sensitive and not safety.tainted({"path": accepted}),
         "stopped": None if accepted else {"reason": "nothing_verified", "detail": "no claim passed verification"},
     }

@@ -68,8 +68,27 @@
   "clean_n": 4,
   "false_positives": 0
  },
+ "campaign": {
+  "with_trust": {
+   "invented": 5,
+   "invented_reached_graph": 2,
+   "detectable_quarantined": 3,
+   "detectable": 3,
+   "honest": 5,
+   "honest_held": 0
+  },
+  "without_trust": {
+   "invented": 5,
+   "invented_reached_graph": 5,
+   "detectable_quarantined": 3,
+   "detectable": 3,
+   "honest": 5,
+   "honest_held": 0
+  },
+  "note": "A poisoning source mixes facts the graph can catch (contradictions) with invented facts nothing can check yet. Measured: how many invented facts reach the graph with source trust and without it, and whether an honest source is ever held back."
+ },
  "end_to_end": null,
  "model": null,
- "note": "cases written by the author; the held-out set is small, so read its numbers as a rough estimate",
- "created_at": 1793608731.368321
+ "note": "Cases written by the author; the held-out set is small, so read its numbers as a rough estimate",
+ "created_at": 1793621008.2864819
 }

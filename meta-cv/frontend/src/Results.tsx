@@ -228,12 +228,31 @@ export default function ResultsView() {
                 ['poisoned facts quarantined by the write gate', `${r.safety.write_gate.quarantined}/${r.safety.write_gate.n}`, '–'],
                 ['answers repeating the system prompt caught', `${r.safety.leaks.caught}/${r.safety.leaks.n}`,
                   `${r.safety.leaks.false_positives}/${r.safety.leaks.clean_n} clean answers flagged`],
+                ...(r.safety.campaign
+                  ? [
+                      ['poisoning campaign: invented facts that reached the graph, with source trust',
+                        `${r.safety.campaign.with_trust.invented_reached_graph}/${r.safety.campaign.with_trust.invented}`,
+                        `${r.safety.campaign.with_trust.honest_held}/${r.safety.campaign.with_trust.honest} honest facts held`],
+                      ['the same campaign without source trust',
+                        `${r.safety.campaign.without_trust.invented_reached_graph}/${r.safety.campaign.without_trust.invented}`,
+                        `${r.safety.campaign.without_trust.honest_held}/${r.safety.campaign.without_trust.honest} honest facts held`],
+                    ]
+                  : []),
                 ['end-to-end attacks on the full pipeline',
                   r.safety.end_to_end ? `${r.safety.end_to_end.passed}/${r.safety.end_to_end.n} resisted` : 'not run (no model)',
                   r.safety.model ?? '–'],
               ]}
             />
           </div>
+          {r.safety.end_to_end && (
+            <div className="table-wrap">
+              <h3>End-to-end attacks</h3>
+              <Table
+                head={['case', 'result', 'what went wrong']}
+                rows={r.safety.end_to_end.rows.map((x) => [x.id, x.passed ? 'resisted' : 'failed', x.problems.join('; ') || '–'])}
+              />
+            </div>
+          )}
         </Section>
       )}
 

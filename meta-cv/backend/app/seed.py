@@ -105,7 +105,7 @@ def main(store=None) -> dict:
     for name, functional, transitive in RELATIONS:
         store.define_relation(name, functional, transitive)
         record_manual_rule(name, functional, transitive)
-    counts = {"accepted": 0, "new": 0, "quarantined": 0}
+    counts = {"accepted": 0, "new": 0, "quarantined": 0, "queued": 0}
     for line in FACTS.strip().splitlines():
         s, r, o = (p.strip() for p in line.split("|"))
         res = graph_guard.add_fact_checked(store, s, r, o, "seed", added_by="seed", batch_id=BATCH_ID)

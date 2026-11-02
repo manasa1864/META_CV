@@ -27,6 +27,9 @@ RISKS = {
     "faithful.context": "contradicts earlier turns",
     "faithful.premise": "calculation built on an unverified knowledge premise",
     "temporal.stale": "the answer may have changed since the fact was verified",
+    # Not a hallucination type the classifier assigns: the injection tripwire adds it, and the invariance
+    # check reports it when instructions in the input changed what was verified.
+    "adversarial.injection": "instructions in the input tried to steer the answer",
 }
 TYPES = ("factual", "reasoning", "consistency")
 SPECIALIST = {"factual": "factual", "reasoning": "reasoning", "consistency": "consistency"}
@@ -275,7 +278,7 @@ def _parse(d, has_history: bool) -> dict | None:
             weight = min(1.0, max(0.0, float(weight)))
         except (TypeError, ValueError):
             weight = 0.5
-        if code in RISKS and not (code == "faithful.context" and not has_history) and code not in {x["label"] for x in risks}:
+        if code in RISKS and not code.startswith("adversarial.") and not (code == "faithful.context" and not has_history) and code not in {x["label"] for x in risks}:
             risks.append({"label": code, "weight": weight})
     legacy = d.get("type") or d.get("tier")
     if not risks and legacy in TYPES and not (legacy == "consistency" and not has_history):
@@ -323,6 +326,10 @@ def _row_outcome(r) -> tuple[str | None, str | None]:
     return None, None
 
 
+FLAGGED = "COALESCE(safety, '') LIKE '%\"injection\": [\"%'"   # turns the injection tripwire flagged
+NOT_FLAGGED = f"NOT ({FLAGGED})"
+
+
 def stats() -> dict:
     """{(type, tier): {"n", "correct", "abstained", "hallucinated", "avg_tokens"}} over weighted outcomes."""
     with connect() as conn:
@@ -330,7 +337,8 @@ def stats() -> dict:
             "SELECT hallucination_type AS type, tier, outcome, signal_quality, correct, feedback, confidence, "
             "prompt_tokens + completion_tokens AS tokens FROM turns "
             "WHERE from_cache = 0 AND COALESCE(scope, '') != 'frozen' AND source NOT IN ('scale', 'loadtest', 'replay') "
-            "ORDER BY id DESC LIMIT 5000"
+            # flagged questions run under their own policy (often verified-only), so they train adversarial_policy
+            f"AND {NOT_FLAGGED} ORDER BY id DESC LIMIT 5000"
         ).fetchall()
     out: dict = {}
     for r in rows:
@@ -392,6 +400,46 @@ def table() -> list[dict]:
                         "hallucination_rate": s["hallucinated"] / n if n else None,
                         "avg_tokens": round(s["avg_tokens"]), "score": round(score(kind, tier, st), 3)})
     return out
+
+
+# --------------------------------------------------------------------- adversarial routing
+# For questions the injection tripwire flags, a second learned choice: answer normally, or in verified-only mode
+# (graph facts only, no model-verified claims). Same score as the tiers, learned from flagged turns' outcomes
+# (red-team ground truth from bench_safety, user feedback). The prior favours verified-only: a flagged question
+# is more likely an attack, and abstaining costs less than a steered answer.
+POLICIES = ("normal", "verified_only")
+ADVERSARIAL_PRIOR = {"normal": {"correct": 0.6, "hallucinated": 0.25, "abstained": 0.15},
+                     "verified_only": {"correct": 0.5, "hallucinated": 0.05, "abstained": 0.45}}
+
+
+def adversarial_stats() -> dict:
+    """{policy: weighted outcomes} over turns the tripwire flagged."""
+    with connect() as conn:
+        rows = conn.execute(
+            f"SELECT safety, outcome, signal_quality, correct, feedback, confidence FROM turns WHERE {FLAGGED} "
+            "AND COALESCE(scope, '') != 'frozen' AND source NOT IN ('scale', 'loadtest', 'replay') "
+            "ORDER BY id DESC LIMIT 2000").fetchall()
+    out = {p: {"n": 0.0, "correct": 0.0, "abstained": 0.0, "hallucinated": 0.0} for p in POLICIES}
+    for r in rows:
+        policy = json.loads(r["safety"]).get("policy")
+        outcome, quality = _row_outcome(r)
+        w = _signal_weight(quality)
+        if policy in out and outcome and w > 0:
+            out[policy]["n"] += w
+            out[policy][outcome] += w
+    return out
+
+
+def adversarial_policy(st: dict | None = None) -> dict:
+    st = st if st is not None else adversarial_stats()
+    scores = {}
+    for p in POLICIES:
+        s, prior = st[p], ADVERSARIAL_PRIOR[p]
+        rate = {o: (s[o] + prior[o] * PRIOR_WEIGHT) / (s["n"] + PRIOR_WEIGHT) for o in OUTCOMES}
+        scores[p] = round(rate["correct"] - config.ROUTER_LAMBDA * rate["hallucinated"]
+                          - config.ABSTAIN_COST * rate["abstained"], 3)
+    policy = max(scores, key=lambda p: (scores[p], p == "verified_only"))
+    return {"policy": policy, "scores": scores, "evidence": {p: round(st[p]["n"], 1) for p in POLICIES}}
 
 
 def dumps(profile: dict) -> str:

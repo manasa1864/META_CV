@@ -5,6 +5,38 @@ Numbers here are measured. Anything that needs the real model, or a real AuraDB 
 
 ## 2026-11-02
 
+### Safety mechanisms built on the verified claims
+- **Instruction-invariance check** (`engine/invariance.py`):
+  - **When it runs:** for a flagged question, it answers again without the instruction-like sentences and compares the verified content.
+  - **If they differ:** the clean answer is used, with an `adversarial.injection` catch and confidence capped at medium.
+  - **Cost:** a second run for flagged questions only, within the budget.
+- **Provenance taint** (`safety.user_asserted`):
+  - **What it covers:** a claim the question itself states, backed only by model checks.
+  - **What happens:** it answers this question but stays out of the claim cache, saved states, the exact-repeat cache and the graph review queue.
+  - **Rule:** both ends must appear in the question. A question that only names its topic is not tainted.
+- **Adversarial routing** (`router.adversarial_policy`):
+  - **What it chooses:** normal or verified-only mode for flagged questions.
+  - **How it learns:** scored like the tiers on weighted outcomes of flagged turns, starting from a verified-only prior.
+  - **Where the grades come from:** `bench_safety`'s end-to-end runs write their grades as ground truth.
+- **Source trust** (`source_trust.py`):
+  - **What it records:** each source's confirmed and contradicted facts, kept by the write gate.
+  - **The hold:** an untrusted source below 50% trust after 3 checked facts has its new facts queued for review. A reviewer's accept bypasses the hold.
+  - **Wikidata:** the gate now checks it for untrusted sources.
+  - **Callers:** ingest and plots report `queued`.
+- **Bench:**
+  - **Isolation:** `bench_safety`'s deterministic checks now use a throwaway state database. An earlier run had written 4 red-team rows into the real quarantine table; they were removed.
+  - **New, poisoning campaign:** invented facts reaching the graph: 2/5 with source trust, 5/5 without; honest facts held: 0/5.
+- **UI:**
+  - **Metrics:** adds rows for steered answers, tainted claims and low-trust holds, plus an "Adversarial routing and source trust" card.
+  - **Results:** shows the campaign.
+- **Working together:**
+  - **Tier router:** flagged turns no longer train it. They run under their own policy, often verified-only, and train only that policy.
+  - **Global breaker:** flagged turns are left out of it, so a burst of attack questions cannot push every user into verified-only mode.
+  - **Chat input:** now stops at the server's 2000-character limit, and a 422 shows a readable message.
+  - **Seed:** counts `queued` results.
+  - **No false flags:** none of the 386 existing demo and benchmark questions is flagged or redacted.
+- **Tested:** `tests/test_safety_mechanisms.py` (12 tests). The scripted demo was driven over HTTP: the smoke-test example, a flagged question, an other-site post and an over-long question all behave as described.
+
 ### Safety beyond hallucination (`app/safety.py`)
 - **Prompt injection:**
   - every model call appends a data rule to its system prompt, and sends its user message inside `<data>` tags (a closing tag in the text is neutralised);
@@ -36,6 +68,9 @@ Numbers here are measured. Anything that needs the real model, or a real AuraDB 
     - write gate: 4/4 poisoned facts quarantined;
     - prompt leaks: 3/3 caught, 0/4 false alarms.
   - **End-to-end attacks with the model:** not measured yet.
+- **Observable:**
+  - **Metrics tab:** a live "Safety checks" card and tile, fed by `turns.safety` per answer and by `safety_events` for refusals that never become a turn.
+  - **Results tab:** shows the red-team run, including each end-to-end attack once a model is configured.
 - **Tested:** `tests/test_redteam.py` (18 tests, run in CI).
 
 ## 2026-11-01

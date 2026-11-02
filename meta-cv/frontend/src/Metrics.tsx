@@ -73,6 +73,26 @@ export default function MetricsView() {
   const curve = bench?.routing?.in_sample_curve ?? []
   const test = bench?.routing?.test
   const gh = m.graph_health
+  const s = m.safety
+  const refused = s ? Object.values(s.refused).reduce((a, b) => a + b, 0) : 0
+  const safetyRows = s
+    ? [
+        { kind: 'questions with instruction-like text', count: s.injection_questions },
+        { kind: 'answers the instructions changed (re-answered)', count: s.answers_steered },
+        { kind: 'user-stated claims kept out of shared memory', count: s.tainted_claims },
+        { kind: 'facts held for review (low source trust)', count: s.facts_held_low_trust },
+        { kind: 'questions with private data', count: s.private_data_questions },
+        { kind: 'stored facts ignored (carry instructions)', count: s.facts_ignored },
+        { kind: 'new facts quarantined (carry instructions)', count: s.facts_quarantined },
+        { kind: 'answers withheld (repeated the prompt)', count: s.answers_withheld },
+        { kind: 'requests over the rate limit', count: s.refused.rate_limited },
+        { kind: 'posts from other sites refused', count: s.refused.forbidden_origin },
+        { kind: 'admin writes refused', count: s.refused.admin_denied },
+        { kind: 'questions over the daily budget', count: s.refused.budget_exhausted },
+      ]
+    : []
+  const redteam = bench?.safety
+  const holdout = redteam?.detector?.injection_holdout
 
   return (
     <div className="metrics">
@@ -99,6 +119,8 @@ export default function MetricsView() {
           sub={`of ${num(m.context_check?.trimmed_answers)} trimmed answers · ${num(m.context_check?.history_expanded)} used full history`} />
         <Tile label="Graph health" value={gh ? `${gh.counts.error ?? 0} errors` : 'not audited'}
           sub={gh ? `${gh.counts.warning ?? 0} warnings · audited ${new Date(gh.ran_at * 1000).toLocaleTimeString()}` : 'see /audit/summary'} />
+        <Tile label="Injection attempts seen" value={num(s?.injection_questions)}
+          sub={`${num((s?.facts_ignored ?? 0) + (s?.facts_quarantined ?? 0))} poisoned facts held back · ${num(refused)} requests refused`} />
       </div>
 
       <div className="grid">
@@ -197,6 +219,67 @@ export default function MetricsView() {
             </BarChart>
           </ResponsiveContainer>
         </Card>
+
+        <Card
+          title="Safety checks, live"
+          note={
+            `What the safety checks saw in ${num(s?.questions_checked)} answered question(s), plus refusals that never became a question. ` +
+            (redteam
+              ? `Latest red-team run: ${holdout ? `${holdout.direct.caught}/${holdout.direct.n} held-out injection attempts caught, ${holdout.paraphrase.caught}/${holdout.paraphrase.n} paraphrases, ${holdout.benign.flagged}/${holdout.benign.n} benign questions flagged` : ''}` +
+                `${redteam.end_to_end ? `; ${redteam.end_to_end.passed}/${redteam.end_to_end.n} end-to-end attacks resisted` : '; end-to-end attacks not run (no model)'} (details on the Results tab).`
+              : 'Run python -m app.bench_safety for the red-team numbers.')
+          }
+          table={<Table head={['what', 'count']} rows={safetyRows.map((r) => [r.kind, r.count])} />}
+        >
+          {safetyRows.some((r) => r.count > 0) ? (
+            <ResponsiveContainer width="100%" height={380}>
+              <BarChart data={safetyRows} layout="vertical" margin={{ left: 8, right: 16 }}>
+                <CartesianGrid stroke={p.grid} horizontal={false} />
+                <XAxis type="number" {...axis} allowDecimals={false} />
+                <YAxis type="category" dataKey="kind" {...axis} width={200} tick={{ fill: p.ink, fontSize: 11 }} />
+                {tooltip}
+                <Bar dataKey="count" name="count" fill={p.s1} radius={[0, 4, 4, 0]} maxBarSize={18} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <p className="empty-chart">Nothing flagged or refused yet.</p>
+          )}
+        </Card>
+
+        <section className="card">
+          <div className="card-head">
+            <h2>Adversarial routing and source trust</h2>
+          </div>
+          <p className="card-note">
+            Questions with instruction-like text are answered normally or in verified-only mode (graph facts only), whichever
+            has scored better on graded flagged questions; with no evidence it starts verified-only. Now:{' '}
+            {s?.adversarial_policy.policy.replace('_', '-') ?? '-'}.
+          </p>
+          <div className="table-wrap">
+            <Table
+              head={['policy', 'score', 'weighted outcomes']}
+              rows={Object.entries(s?.adversarial_policy.scores ?? {}).map(([k, v]) => [
+                k.replace('_', '-'),
+                v.toFixed(2),
+                s?.adversarial_policy.evidence[k] ?? 0,
+              ])}
+            />
+          </div>
+          <p className="card-note">
+            Sources whose facts the write gate could check, least trusted first. An untrusted source below 50% trust after 3
+            checked facts has its new facts sent to review.
+          </p>
+          <div className="table-wrap">
+            {s?.sources.length ? (
+              <Table
+                head={['source', 'trust', 'confirmed', 'contradicted']}
+                rows={s.sources.map((x) => [x.source + (x.trusted ? ' (trusted)' : ''), pct(x.trust), x.confirmed, x.contradicted])}
+              />
+            ) : (
+              <p className="empty-chart">No source has a checked fact yet.</p>
+            )}
+          </div>
+        </section>
 
         <Card
           title="Verified answers over time"

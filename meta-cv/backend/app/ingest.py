@@ -81,6 +81,9 @@ def ingest(store, text: str, source: str | None) -> dict:
             result["queued"].append({**fact, "reason": "unverified_source"})
             continue
         res = graph_guard.add_fact_checked(store, s, r, o, source, added_by="ingest")
+        if res["status"] == "queued":   # the source's record is poor (source_trust.py)
+            result["queued"].append({**fact, "reason": "low_source_trust"})
+            continue
         if res["status"] == "quarantined":
             result["quarantined"].append({**fact, "reason": res["reason"]})
             continue

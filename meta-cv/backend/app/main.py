@@ -80,6 +80,7 @@ async def same_origin_writes(request: Request, call_next):
     if request.method in ("POST", "PUT", "PATCH", "DELETE") and origin:
         hosts = {request.headers.get("host"), request.headers.get("x-forwarded-host")}
         if urlsplit(origin).netloc not in hosts and origin.rstrip("/") not in config.ALLOWED_ORIGINS:
+            safety.record_event("forbidden_origin")
             return JSONResponse({"code": "forbidden_origin", "message": "Requests from other sites are not accepted."},
                                 status_code=403)
     return await call_next(request)
@@ -104,8 +105,10 @@ def require_admin(request: Request, x_admin_token: str | None = Header(default=N
     mode = _writes(request)
     if mode == "token":
         if not hmac.compare_digest((x_admin_token or "").encode(), config.ADMIN_TOKEN.encode()):
+            safety.record_event("admin_denied")
             raise HTTPException(403, "this endpoint needs an admin token")
     elif mode == "closed":
+        safety.record_event("admin_denied")
         raise HTTPException(403, "this deployment is read-only" if config.JUDGE_MODE else
                             "admin writes from another machine need ADMIN_TOKEN set on the server")
 
@@ -132,12 +135,16 @@ def chat_guard(request: Request) -> None:
             q = _hits[ip]
             while q and now - q[0] > 60:
                 q.popleft()
-            if len(q) >= config.RATE_LIMIT_PER_MIN:
-                raise HTTPException(429, "Too many questions in a minute - please wait a moment.")
-            q.append(now)
+            limited = len(q) >= config.RATE_LIMIT_PER_MIN
+            if not limited:
+                q.append(now)
+        if limited:
+            safety.record_event("rate_limited")
+            raise HTTPException(429, "Too many questions in a minute - please wait a moment.")
     with connect() as conn:
         row = conn.execute("SELECT tokens FROM usage_daily WHERE day=?", (time.strftime("%Y-%m-%d"),)).fetchone()
     if row and row["tokens"] >= config.DAILY_TOKEN_BUDGET:
+        safety.record_event("budget_exhausted")
         raise HTTPException(429, "Today's question budget is used up. The recorded examples and results still work.")
 
 
@@ -404,7 +411,7 @@ def accept_item(item_id: int):
         res = {"status": "accepted" if store.add_alias(row["subject"], row["object"]) else "conflict"}
     else:
         res = graph_guard.add_fact_checked(store, row["subject"], row["relation"], row["object"], row["source"],
-                                           added_by="review")
+                                           added_by="review", reviewed=True)
     if res["status"] in ("accepted", "quarantined"):
         with connect() as conn:
             conn.execute("UPDATE review_queue SET status=? WHERE id=?",

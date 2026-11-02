@@ -30,6 +30,8 @@ container sets `META_NO_HOME_ENV=1` so nothing reads `~/.meta_cv/.env`.
 | `WIKIDATA_LOOKUP` | optional: `0` turns off the Wikidata evidence lookup (on by default; needs outbound HTTPS to wikidata.org) |
 | `CHECK_WORKERS` | optional: model checks run at the same time (default `6`); lower it if the model API rate-limits, `1` checks one by one |
 | optional | `RATE_LIMIT_PER_MIN` (12 in judge mode, 30 otherwise; `0` = off), `MAX_QUESTION_CHARS` (2000), `DAILY_TOKEN_BUDGET` (2000000), `MAX_CONCURRENT` (8), `LLM_TIMEOUT` (30) |
+| `INVARIANCE_CHECK`, `ADVERSARIAL_ROUTING` | `1` (default) / `0`: re-answer flagged questions without their instructions; learned normal-vs-verified-only policy for flagged questions |
+| `SOURCE_TRUST_MIN_FACTS`, `SOURCE_TRUST_FLOOR` | `3`, `0.5`: an untrusted source with at least this many checked facts and trust below the floor has its new facts sent to review |
 | `TURNS_RETENTION_DAYS` | chat turns are kept this long, with private data already redacted (default `90`; `0` keeps them). Benchmark turns are kept |
 
 ## Where state lives

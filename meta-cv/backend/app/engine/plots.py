@@ -44,7 +44,7 @@ def add_plot(store, work: str, events: list[dict], source: str | None = None, *,
                 counts["accepted"] += 1
                 counts["new"] += bool(res.get("created"))
             else:
-                counts["quarantined"].append({"fact": f"{s} | {r} | {o}", "reason": res["reason"]})
+                counts["quarantined"].append({"fact": f"{s} | {r} | {o}", "reason": res["reason"], "status": res["status"]})
         prev = name
     return {"work": work, "events": len(events), **counts}
 

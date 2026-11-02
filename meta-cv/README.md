@@ -326,6 +326,18 @@ Fewer tokens, with no check that catches a hallucination skipped (`engine/compre
 | secrets | the configured keys and passwords are masked in every log record and in the answer stream |
 | abuse | per-IP rate limit always on (30/min, 12 in judge mode), read from the trusted proxy's end of `X-Forwarded-For` so it cannot be dodged by sending a new header value. Questions are capped at 2000 characters. POST/DELETE requests from other sites' pages are refused. Without `ADMIN_TOKEN`, admin writes work only from the machine the app runs on. The production server sends anti-framing and no-sniff headers |
 
+#### Mechanisms built on the verified claims
+
+The table above is standard practice. These four use parts only this system has (verified claim paths, the learned
+router, the write gate), so they measure or limit an attack's *effect* instead of only recognising its wording:
+
+| mechanism | what it does | cost |
+|---|---|---|
+| **instruction-invariance check** (`engine/invariance.py`) | a question the tripwire flags is answered a second time with the instruction-like sentences removed. If the original run verified claims the clean run did not, or reached a different final number, the instructions steered the outcome: the clean answer is used, with an `adversarial.injection` catch and confidence capped at medium. Otherwise the original answer stands | a second run, for flagged questions only; inside the per-question budget |
+| **provenance taint** (`safety.user_asserted`) | a claim the question itself states (it names both ends: "Was Austen born in Bath?", "Since Einstein was born in 1880, …") that only model checks back may answer this question. It is not written to the claim cache, saved states or the graph review queue. One user's premise cannot become another user's verified fact | repeats of such questions re-run their model checks |
+| **adversarial routing** (`router.adversarial_policy`) | for flagged questions, a learned choice between answering normally and verified-only mode (graph facts only), scored like the tiers on graded outcomes of flagged turns. It starts verified-only and learns from `bench_safety`'s end-to-end grades and user feedback | flagged questions abstain more until evidence says otherwise |
+| **source trust** (`source_trust.py`) | the write gate keeps each source's record: confirmed (graph or Wikidata backs it) or contradicted (contradiction, wrong type, injected text). An untrusted source with trust below 50% after 3 checked facts has its new facts sent to review, even facts nothing can check. For untrusted sources, the gate also checks Wikidata | a Wikidata lookup per untrusted write on a relation it covers |
+
 `python -m app.bench_safety` scores it on `bench_data/safety_cases.json`. Measured without a model:
 - **Injection tripwire:**
   - direct attempts caught: 20/20 on the development set, 8/8 on a held-out set written after the patterns were frozen;
@@ -335,8 +347,22 @@ Fewer tokens, with no check that catches a hallucination skipped (`engine/compre
   - redaction: 8/8 found, with no clean text changed;
   - write gate: 4/4 poisoned facts quarantined;
   - prompt leaks: 3/3 caught, with no false alarm.
+- **Poisoning campaign** (a source mixing 3 facts the graph contradicts with 5 invented facts nothing can check):
+  - invented facts reaching the graph: 2/5 with source trust, 5/5 without;
+  - honest facts held back: 0/5.
+  - The two that get through arrive before the third contradiction. This is a constructed scenario that shows the mechanism, not a rate on real traffic.
 
-With a model, it also runs four end-to-end attacks through the full pipeline (**not measured yet**). The Results page shows the latest run. The tripwire only makes attempts visible, and paraphrases get past it. The defence is the data rule plus verification: an injected instruction cannot switch the checks off.
+The instruction-invariance check, taint and adversarial routing are tested with a scripted model (`tests/test_safety_mechanisms.py`). How often real attacks steer the real model is what the end-to-end cases measure.
+
+With a model, it also runs four end-to-end attacks through the full pipeline (**not measured yet**). The Results page shows the latest run.
+
+The Metrics tab has a live "Safety checks" card covering:
+- questions with instruction-like text or private data;
+- stored facts ignored, and new facts quarantined, for carrying instructions;
+- answers withheld;
+- requests refused (rate limit, other-site posts, admin writes, daily budget).
+
+Each turn records what the checks saw in `turns.safety`. Refusals that never become a turn are counted per day in `safety_events`. The tripwire only makes attempts visible, and paraphrases get past it. The defence is the data rule plus verification: an injected instruction cannot switch the checks off.
 
 ## Tools
 

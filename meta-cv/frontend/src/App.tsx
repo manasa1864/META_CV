@@ -731,6 +731,7 @@ function ChatComposer({
         onChange={(e) => setValue(e.target.value)}
         placeholder={compact ? 'Ask a follow-up…' : 'What are you curious about?'}
         aria-label="Ask Bloop anything"
+        maxLength={2000} // the server's MAX_QUESTION_CHARS
         autoFocus
       />
       <div className="composer-bar">
@@ -909,6 +910,7 @@ const RISK_LABELS: Record<string, string> = {
   'faithful.context': 'Contradicted an earlier answer',
   'faithful.premise': 'Calculation on an unverified fact',
   'temporal.stale': 'Possibly out of date',
+  'adversarial.injection': 'Hidden instructions tried to steer the answer',
 }
 
 function Verification({ final }: { final: Final }) {

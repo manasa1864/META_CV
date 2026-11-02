@@ -20,7 +20,7 @@ import time
 from .. import config, llm, meter, safety
 from ..db import connect
 from ..graph_common import GraphLimitError, GraphUnavailable, ReadOnlyGraph
-from . import cache, factual, guardrails, memory, planner, reasoning, router, states
+from . import cache, factual, guardrails, invariance, memory, planner, reasoning, router, states
 from .health import health
 from .router import caught
 from .trace import Trace
@@ -110,12 +110,6 @@ def _false_premise(r: dict, result: dict) -> dict | None:
 def _solve(store, question: str, mode: str, conversation_id: str | None, force_tier: str | None, reuse: bool,
            flags: dict, meter_: dict, trace: Trace):
     reasoning_mode = None if mode == "auto" else mode
-    signals = safety.injection_signals(question)
-    if signals:
-        meter_["injection"] = signals
-        yield trace.note("safety", "The question contains instruction-like text",
-                         f"Patterns: {', '.join(signals)}. It is handled as a question to answer: the model is told to "
-                         "treat it as data, and every claim is still verified, so it cannot switch the checks off.", "warn")
     hist = memory.history(conversation_id)
     breaker = health.state()
     verified_only = bool(flags.get("verified_only") or breaker["verified_only"])
@@ -179,7 +173,7 @@ def _solve(store, question: str, mode: str, conversation_id: str | None, force_t
 
     result = _false_premise(r, result) or result
     cacheable = result.pop("cacheable") and reuse and r["type"] != "consistency" and q == question \
-        and not result.get("stopped") and not current
+        and not result.get("stopped") and not current and not safety.tainted(result)
     tokens = meter_["prompt"] + meter_["completion"]
     if reuse and not result.get("stopped") and not current and (state := states.state_of(result)):
         states.save(result["tier"], q, state, tokens)
@@ -188,6 +182,62 @@ def _solve(store, question: str, mode: str, conversation_id: str | None, force_t
         yield trace.note("cache", "Saved this verified path for reuse")
     return {**result, "hallucination_type": r["type"], "route": r, "standalone": q if q != question else None,
             "reused_state": {"question": prior["question"], "similarity": prior["similarity"]} if prior else None}
+
+
+def _adversarial(result: dict) -> dict:
+    """Show the injection risk in the profile of a flagged question's answer."""
+    r = result.get("route")
+    if not r:
+        return result
+    return {**result, "route": {**r, "risks": [{"label": "adversarial.injection", "weight": 1.0}] + r["risks"]}}
+
+
+def _guarded(store, question: str, mode: str, conversation_id: str | None, force_tier: str | None, reuse: bool,
+             flags: dict, meter_: dict, trace: Trace):
+    """_solve, with the checks for a question the injection tripwire flags: no caching, the learned
+    adversarial policy (normal or verified-only), and the instruction-invariance check."""
+    signals = safety.injection_signals(question)
+    if not signals:
+        return (yield from _solve(store, question, mode, conversation_id, force_tier, reuse, flags, meter_, trace))
+    meter_["injection"] = signals
+    detail = (f"Patterns: {', '.join(signals)}. It is handled as a question to answer: the model is told to treat it "
+              "as data, every claim is still verified, and nothing from it is cached.")
+    if config.ADVERSARIAL_ROUTING and not flags.get("verified_only") and not flags.get("no_adversarial_routing"):
+        pol = router.adversarial_policy()
+        meter_["policy"] = pol["policy"]
+        if pol["policy"] == "verified_only":
+            flags = {**flags, "verified_only": True}
+        detail += (f" Adversarial routing: {pol['policy'].replace('_', '-')} (scores "
+                   + ", ".join(f"{k.replace('_', '-')} {v:.2f}" for k, v in pol["scores"].items())
+                   + f"; learned from {sum(pol['evidence'].values()):g} weighted flagged outcome(s)).")
+    else:
+        meter_["policy"] = "verified_only" if flags.get("verified_only") else "normal"
+    yield trace.note("safety", "The question contains instruction-like text", detail, "warn")
+    result = yield from _solve(store, question, mode, conversation_id, force_tier, False, flags, meter_, trace)
+    if not config.INVARIANCE_CHECK or flags.get("no_invariance") or result.get("from_cache"):
+        return _adversarial(result)
+
+    clean = invariance.strip(question)
+    if not clean:
+        yield trace.note("safety", "Invariance check skipped", "Nothing is left once the instructions are removed.", "info")
+        return _adversarial(result)
+    ev = trace.start("safety", "Invariance check: answering again without the instruction-like text", f"“{clean}”")
+    yield ev
+    try:
+        alt = invariance.drain(_solve(store, clean, mode, conversation_id, force_tier, False, flags, meter_, Trace()))
+    except meter.BudgetExceeded:
+        yield trace.settle(ev, "warn", "Skipped: the per-question budget ran out before the second answer.")
+        return _adversarial(result)
+    diffs = invariance.compare(result, alt)
+    if not diffs:
+        yield trace.settle(ev, "ok", "The same content is verified without the instructions: they did not change the answer.")
+        return _adversarial(result)
+    meter_["steered"] = True
+    yield trace.settle(ev, "fail", f"The instructions changed what was verified ({'; '.join(diffs[:3])}). "
+                                   "Answering the question without them.")
+    found = caught("adversarial.injection", result["tier"], "corrected", "; ".join(diffs[:3]))
+    return _adversarial({**alt, "caught": alt.get("caught", []) + [found], "standalone": clean,
+                         "confidence": "medium" if alt["confidence"] == "high" else alt["confidence"]})
 
 
 def _outcome(result: dict) -> str:
@@ -214,6 +264,14 @@ def _leak_check(result: dict, trace: Trace):
             "stopped": {"reason": "unsafe_output", "detail": "the answer repeated the system prompt"}}
 
 
+def _safety_of(meter_: dict, result: dict) -> dict:
+    """What the safety checks saw on this question (the final event and the turns table carry it)."""
+    return {"injection": meter_.get("injection", []), "private_data": meter_.get("private_data", []),
+            "ignored_facts": meter_.get("ignored_facts", 0), "tainted_claims": meter_.get("tainted_claims", 0),
+            "policy": meter_.get("policy"), "steered": bool(meter_.get("steered")),
+            "withheld": (result.get("stopped") or {}).get("reason") == "unsafe_output"}
+
+
 def _log(conversation_id, question, result, meter_, source, degraded) -> int:
     """Stored with private data redacted (safety.redact)."""
     saved = result.get("tokens", 0) if result.get("from_cache") else 0
@@ -223,8 +281,8 @@ def _log(conversation_id, question, result, meter_, source, degraded) -> int:
         cur = conn.execute(
             "INSERT INTO turns(conversation_id, question, hallucination_type, tier, mode, confidence, from_cache, "
             "reused_state, caught, prompt_tokens, completion_tokens, saved_tokens, answer, commitments, source, "
-            "outcome, signal_quality, risks, stopped, degraded, scope, reuse_kind, compression_context, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "outcome, signal_quality, risks, stopped, degraded, scope, reuse_kind, compression_context, safety, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (conversation_id, question, result["hallucination_type"], result["tier"], result.get("mode"),
              result["confidence"], int(bool(result.get("from_cache"))), int(bool(result.get("reused_state"))),
              json.dumps(result.get("caught", [])), meter_["prompt"], meter_["completion"], saved, answer,
@@ -232,7 +290,8 @@ def _log(conversation_id, question, result, meter_, source, degraded) -> int:
              _outcome(result), "self", router.dumps(r) if r else None,
              json.dumps(result.get("stopped")) if result.get("stopped") else None, degraded,
              "frozen" if config.ROUTER_FROZEN else None, _reuse_kind(result),
-             json.dumps(meter_.get("compression")) if meter_.get("compression") else None, time.time()),
+             json.dumps(meter_.get("compression")) if meter_.get("compression") else None,
+             json.dumps(_safety_of(meter_, result)), time.time()),
         )
         today = time.strftime("%Y-%m-%d")
         conn.execute("INSERT INTO usage_daily(day, tokens) VALUES (?, ?) ON CONFLICT(day) DO UPDATE SET "
@@ -255,12 +314,14 @@ def run(store, question: str, mode: str = "auto", typing_delay: float = 0.015, c
     meter_ = meter.new_meter(limits)
     meter_["flags"] = flags
     private = safety.redact(question)[1]
+    meter_["private_data"] = private
+    meter_["question"] = question  # provenance taint: values the user supplied (safety.user_asserted)
     if private:  # answered, but never cached or reused: the cache and the states would keep the raw question
         reuse = False
     try:
         try:
             result = yield from meter.metered(
-                _solve(store, question, mode, conversation_id, force_tier, reuse, flags, meter_, trace), meter_)
+                _guarded(store, question, mode, conversation_id, force_tier, reuse, flags, meter_, trace), meter_)
             result = yield from _leak_check(result, trace)
         except meter.BudgetExceeded as e:
             yield trace.note("budget", "Per-question budget used up", str(e), "fail")
@@ -298,7 +359,10 @@ def run(store, question: str, mode: str = "auto", typing_delay: float = 0.015, c
         yield _error("internal")
         return
 
-    health.record(rejected=bool(result.get("stopped")) or any(c["action"] == "dropped" for c in result.get("caught", [])))
+    # Flagged questions are left out of the global breaker: they abstain more by design (verified-only policy), and a
+    # burst of attack questions must not push every other user into verified-only mode.
+    if not meter_.get("injection"):
+        health.record(rejected=bool(result.get("stopped")) or any(c["action"] == "dropped" for c in result.get("caught", [])))
     yield {"type": "thinking_done", "message": "Processing complete"}
     for chunk in _chunks(safety.mask_secrets(result["answer"])):
         yield {"type": "answer", "delta": chunk}
@@ -335,5 +399,5 @@ def run(store, question: str, mode: str = "auto", typing_delay: float = 0.015, c
                         "context": meter_.get("compression", {})},
         "premises": result.get("premises") or [],
         "path": result["path"],
-        "safety": {"injection": meter_.get("injection", []), "private_data": private},
+        "safety": _safety_of(meter_, result),
     }

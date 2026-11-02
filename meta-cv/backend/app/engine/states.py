@@ -72,11 +72,14 @@ def find(tier: str, question: str) -> dict | None:
 
 def state_of(result: dict) -> dict | None:
     """The symbolic, reusable core of a tier result, or None if nothing in it is verified."""
+    # Claims with user taint (safety.user_asserted) stay out: a saved state is reused for other users' questions.
     if result["tier"] == "factual":
         triples = [{k: c[k] for k in ("subject", "relation", "object", "source")}
-                   for c in result["path"] if c["status"] == "accepted"]
+                   for c in result["path"] if c["status"] == "accepted" and c.get("taint") != "user"]
         return {"triples": triples} if triples else None
     if result["tier"] == "reasoning" and result["confidence"] == "high" and not result.get("stopped"):
+        if any(p.get("taint") == "user" for p in result.get("premises") or []):
+            return None
         premises = [{k: p[k] for k in ("subject", "relation", "object", "source")} for p in result.get("premises") or []]
         return {"steps": result["path"], "final_answer": result.get("final_answer", ""), "premises": premises}
     return None

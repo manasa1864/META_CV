@@ -87,6 +87,10 @@ def test_a_poisoned_stored_fact_never_reaches_the_model_or_the_answer(fake_llm):
     events = run(store, "Where was Jane Austen born?")
     assert "paris" not in answer_text(events).lower()
     assert any(e["type"] == "step" and e["stage"] == "safety" and e["status"] == "warn" for e in events)
+    assert final(events)["safety"]["ignored_facts"] == 1
+    from app import metrics
+
+    assert metrics.summary()["safety"]["facts_ignored"] == 1
 
 
 def test_a_claim_carrying_instructions_is_rejected_even_if_the_model_drafts_it(fake_llm):
@@ -128,6 +132,10 @@ def test_private_data_is_answered_but_stored_redacted_and_never_reused(fake_llm)
         assert "example.com" not in row["question"] and "[email]" in row["question"] and "98765" not in row["question"]
         assert conn.execute("SELECT COUNT(*) FROM reasoning_states").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM state_cache").fetchone()[0] == 0
+    from app import metrics
+
+    live = metrics.summary()["safety"]
+    assert live["private_data_questions"] == 1 and live["private_data_kinds"] == {"email": 1, "phone": 1}
 
 
 def test_secrets_never_reach_the_answer_or_the_log(fake_llm, monkeypatch, caplog):
@@ -189,6 +197,9 @@ def test_rate_limit_applies_outside_judge_mode_and_ignores_spoofed_addresses(fak
         codes = [client.post("/chat", json={"question": "2+2?"},
                              headers={"X-Forwarded-For": f"10.0.0.{i}, 198.51.100.7"}).status_code for i in range(3)]
     assert codes == [200, 200, 429]   # a new left-hand value each time does not reset the limit
+    from app import metrics
+
+    assert metrics.summary()["safety"]["refused"]["rate_limited"] == 1
 
 
 def test_question_length_is_capped():
@@ -212,4 +223,6 @@ def test_bench_safety_writes_a_result_the_results_page_reads(monkeypatch, tmp_pa
     monkeypatch.setattr(config, "RESULTS_DIR", tmp_path)
     res = bench_safety.main(["--no-model"])
     assert res["end_to_end"] is None and json.loads(json.dumps(res))
+    with_trust, without = res["campaign"]["with_trust"], res["campaign"]["without_trust"]
+    assert with_trust["invented_reached_graph"] < without["invented_reached_graph"] and with_trust["honest_held"] == 0
     assert metrics.latest_results()["safety"]["write_gate"]["quarantined"] == len(CASES["poisoned_facts"])

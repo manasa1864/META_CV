@@ -14,6 +14,7 @@ privacy     redact() removes emails, phone numbers, card numbers, ID numbers and
 """
 import logging
 import re
+import time
 
 from . import config
 
@@ -146,6 +147,54 @@ def mask_secrets(text: str) -> str:
         if s in text:
             text = text.replace(s, "[secret]")
     return text
+
+
+EVENTS = ("rate_limited", "forbidden_origin", "admin_denied", "budget_exhausted")
+
+
+def record_event(kind: str) -> None:
+    """Count a refusal that never becomes a turn, per day, for the Metrics page. Never raises."""
+    from .db import connect  # noqa: PLC0415
+
+    try:
+        with connect() as conn:
+            conn.execute("INSERT INTO safety_events(day, kind, count) VALUES (?, ?, 1) ON CONFLICT(day, kind) "
+                         "DO UPDATE SET count = count + 1", (time.strftime("%Y-%m-%d"), kind))
+    except Exception:  # noqa: BLE001 - counting must not turn a refusal into a server error
+        logging.getLogger(__name__).warning("could not record safety event %s", kind, exc_info=True)
+
+
+def count(name: str, n: int = 1) -> None:
+    """Count a safety action on this question's meter (ignored_facts, tainted_claims); stored with the turn."""
+    from . import meter  # noqa: PLC0415
+
+    m = meter.current()
+    if m is not None and n:
+        m[name] = m.get(name, 0) + n
+
+
+# ------------------------------------------------------------------------------------- provenance taint
+def user_asserted(claim: dict) -> bool:
+    """Did this question state the claim itself? True when the question names both its subject and its object
+    ("Since Einstein was born in 1880, ...", "Was Austen born in Bath?"); a question that only names its topic
+    ("Who is in Pride and Prejudice?") does not. Such a claim, backed only by model checks, is "tainted": it may
+    answer this question, but it does not spread into shared memory (the claim cache, saved states, the graph
+    review queue), so one user's premise cannot become another user's verified fact."""
+    from . import meter  # noqa: PLC0415
+    from .engine.entities import normalize  # noqa: PLC0415
+
+    question = (meter.current() or {}).get("question")
+    if not question:
+        return False
+    q = f" {normalize(question)} "
+    ends = [normalize(str(claim.get(k) or "")) for k in ("subject", "object")]
+    return all(len(v) >= 2 and f" {v} " in q for v in ends)
+
+
+def tainted(result: dict) -> list[dict]:
+    """The accepted claims in a tier result that carry user taint."""
+    items = list(result.get("path") or []) + list(result.get("premises") or [])
+    return [c for c in items if c.get("taint") == "user" and c.get("status", "accepted") == "accepted"]
 
 
 class _MaskingRecord(logging.LogRecord):

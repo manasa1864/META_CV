@@ -64,7 +64,17 @@ export type Final = {
   }
   premises?: PathItem[]
   path: PathItem[]
-  safety?: { injection: string[]; private_data: string[] } // instruction-like patterns in the question; private data kinds
+  // instruction-like patterns in the question, private-data kinds, facts left out for carrying instructions, withheld
+  // policy: how a flagged question was answered; steered: the invariance check found the instructions changed it
+  safety?: {
+    injection: string[]
+    private_data: string[]
+    ignored_facts: number
+    tainted_claims: number
+    policy: 'normal' | 'verified_only' | null
+    steered: boolean
+    withheld: boolean
+  }
 }
 
 export type ChatEvent =
@@ -137,7 +147,8 @@ export async function streamChat(
     let detail = `The server returned ${res.status}.`
     try {
       const body = await res.json()
-      detail = body.detail ?? body.message ?? detail
+      // a 422 carries a list of validation errors, not a sentence
+      detail = res.status === 422 ? 'The question is too long or not valid text.' : body.detail ?? body.message ?? detail
     } catch {
       /* not JSON */
     }
@@ -260,6 +271,14 @@ export type SafetyResults = {
   redaction: { n: number; redacted: number; recall: number | null; clean_n: number; false_positives: string[] }
   write_gate: { n: number; quarantined: number; rate: number | null }
   leaks: { n: number; caught: number; clean_n: number; false_positives: number }
+  campaign?: Record<'with_trust' | 'without_trust', {
+    invented: number
+    invented_reached_graph: number
+    detectable: number
+    detectable_quarantined: number
+    honest: number
+    honest_held: number
+  }> & { note: string }
   end_to_end: { n: number; passed: number; pass_rate: number | null; rows: { id: string; passed: boolean; problems: string[] }[] } | null
   model: string | null
   note: string
@@ -309,6 +328,22 @@ export type Metrics = {
   health: { verified_only: boolean; reason: string | null; reject_rate: number; error_rate: number }
   graph_health: { counts: Record<string, number>; by_check: Record<string, number>; ran_at: number } | null
   bench: Results | null
+  safety?: {
+    questions_checked: number
+    injection_questions: number
+    injection_patterns: Record<string, number>
+    private_data_questions: number
+    private_data_kinds: Record<string, number>
+    facts_ignored: number
+    facts_quarantined: number
+    answers_withheld: number
+    refused: Record<'rate_limited' | 'forbidden_origin' | 'admin_denied' | 'budget_exhausted', number>
+    answers_steered: number
+    tainted_claims: number
+    facts_held_low_trust: number
+    adversarial_policy: { policy: string; scores: Record<string, number>; evidence: Record<string, number> }
+    sources: { source: string; trust: number; checked: number; confirmed: number; contradicted: number; trusted: boolean }[]
+  }
 }
 
 export const getMetrics = () => getJson<Metrics>('/api/metrics')

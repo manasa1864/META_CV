@@ -116,6 +116,18 @@ CREATE TABLE IF NOT EXISTS usage_daily (
     day    TEXT PRIMARY KEY,
     tokens INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS source_trust (     -- how often each source's facts checked out (source_trust.py)
+    source       TEXT PRIMARY KEY,
+    confirmed    INTEGER NOT NULL DEFAULT 0,
+    contradicted INTEGER NOT NULL DEFAULT 0,
+    updated_at   REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS safety_events (    -- refusals that never become a turn (rate limit, other-site posts, ...)
+    day   TEXT NOT NULL,
+    kind  TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, kind)
+);
 """
 
 # (table, column, declaration) added to databases created before the column existed
@@ -136,6 +148,7 @@ MIGRATIONS = [
     ("turns", "scope", "TEXT"),              # whose feedback this is (conversation scope)
     ("turns", "reuse_kind", "TEXT"),         # exact_repeat | state_answer | template | similar_state
     ("turns", "compression_context", "TEXT"),  # JSON: facts/relations kept and cut, redrafts, history expansion
+    ("turns", "safety", "TEXT"),             # JSON: injection patterns, private-data kinds, facts ignored, withheld
 ]
 
 
