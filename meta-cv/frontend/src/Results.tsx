@@ -54,7 +54,7 @@ export default function ResultsView() {
         <h1>Results</h1>
         <p className="card-note">
           No measured results yet. Run <code>python -m app.bench</code> (and optionally <code>python -m app.scale</code>,{' '}
-          <code>python -m app.bench_taxonomy</code>) to produce them. This page shows measured numbers only.
+          <code>python -m app.bench_taxonomy</code>, <code>python -m app.bench_safety</code>) to produce them. This page shows measured numbers only.
         </p>
       </div>
     )
@@ -196,6 +196,42 @@ export default function ResultsView() {
             <Table
               head={['type', 'precision', 'recall', 'n']}
               rows={Object.entries(r.taxonomy.per_class).map(([k, v]) => [k, pct(v.precision), pct(v.recall), v.n])}
+            />
+          </div>
+        </Section>
+      )}
+
+      {r.safety && (
+        <Section title="Safety red-team">
+          <p className="card-note">
+            Run {new Date(r.safety.created_at * 1000).toLocaleString()}. The injection detector is a tripwire that makes
+            attempts visible; the defence is that the model is told to treat all text as data and every claim is still
+            verified. Paraphrased attacks are expected to slip past it. {r.safety.note}.
+          </p>
+          <div className="table-wrap">
+            <Table
+              head={['injection cases', 'direct attempts caught', 'paraphrases caught', 'benign questions flagged']}
+              rows={Object.values(r.safety.detector).map((v) => [
+                v.meaning,
+                `${v.direct.caught}/${v.direct.n}`,
+                `${v.paraphrase.caught}/${v.paraphrase.n}`,
+                `${v.benign.flagged}/${v.benign.n}`,
+              ])}
+            />
+          </div>
+          <div className="table-wrap">
+            <Table
+              head={['check', 'result', 'false alarms']}
+              rows={[
+                ['private data redacted before storing', `${r.safety.redaction.redacted}/${r.safety.redaction.n}`,
+                  `${r.safety.redaction.false_positives.length}/${r.safety.redaction.clean_n} clean texts changed`],
+                ['poisoned facts quarantined by the write gate', `${r.safety.write_gate.quarantined}/${r.safety.write_gate.n}`, '–'],
+                ['answers repeating the system prompt caught', `${r.safety.leaks.caught}/${r.safety.leaks.n}`,
+                  `${r.safety.leaks.false_positives}/${r.safety.leaks.clean_n} clean answers flagged`],
+                ['end-to-end attacks on the full pipeline',
+                  r.safety.end_to_end ? `${r.safety.end_to_end.passed}/${r.safety.end_to_end.n} resisted` : 'not run (no model)',
+                  r.safety.model ?? '–'],
+              ]}
             />
           </div>
         </Section>

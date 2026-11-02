@@ -897,6 +897,7 @@ const STOP_REASONS: Record<string, string> = {
   graph_conflict: 'The knowledge graph itself holds conflicting facts about this, so Bloop did not answer.',
   premise_unverified: 'The calculation needed a fact that could not be verified.',
   budget: 'The question needed more checking than one answer is allowed.',
+  unsafe_output: 'The answer repeated internal instructions, so it was withheld.',
 }
 
 const RISK_LABELS: Record<string, string> = {

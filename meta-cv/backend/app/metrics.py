@@ -31,14 +31,15 @@ def _newest(pattern: str) -> dict | None:
 
 
 def latest_results() -> dict | None:
-    """results/latest.json (benchmark) plus the newest scale-*.json and taxonomy-*.json, without the raw rows."""
+    """results/latest.json (benchmark) plus the newest scale-, taxonomy- and safety-*.json, without the raw rows."""
     bench = _read(config.RESULTS_DIR / "latest.json") if config.RESULTS_DIR.exists() else None
-    scale, taxonomy = _newest("scale-*.json"), _newest("taxonomy-*.json")
-    if not (bench or scale or taxonomy):
+    scale, taxonomy, safety = _newest("scale-*.json"), _newest("taxonomy-*.json"), _newest("safety-*.json")
+    if not (bench or scale or taxonomy or safety):
         return None
     out = {k: v for k, v in (bench or {}).items() if k != "rows"}
     out["scale"] = scale
     out["taxonomy"] = taxonomy
+    out["safety"] = safety
     out["audit"] = (lambda a: {k: a[k] for k in ("ran_at", "counts", "by_check", "backend")} if a else None)(audit.last_result())
     return out
 

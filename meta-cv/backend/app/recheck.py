@@ -8,7 +8,7 @@
 - reasoning_states: their graph-backed triples / premises must still be supported;
 - model-verified claims past CLAIM_TTL_HOURS are dropped (state_cache expiry);
 - then prune: reasoning_states capped at STATE_MAX_ROWS (least-hit first), state_cache rows older than
-  STATE_CACHE_MAX_AGE_DAYS, turns older than TURNS_RETENTION_DAYS (if set).
+  STATE_CACHE_MAX_AGE_DAYS, chat turns older than TURNS_RETENTION_DAYS (0 keeps them).
 Cheap to run on a schedule or before a demo; graph writes already invalidate dependent entries.
 """
 import argparse
@@ -76,11 +76,17 @@ def run(store, dry_run: bool = False) -> dict:
     if not dry_run:
         report["states_pruned"] = states.prune(config.STATE_MAX_ROWS)
         report["expired_removed"] += state_cache.prune(config.STATE_CACHE_MAX_AGE_DAYS)
-        if config.TURNS_RETENTION_DAYS > 0:
-            with connect() as conn:
-                report["turns_pruned"] = conn.execute("DELETE FROM turns WHERE created_at < ?",
-                                                      (now - config.TURNS_RETENTION_DAYS * 86400,)).rowcount
+        report["turns_pruned"] = prune_turns(now)
     return report
+
+
+def prune_turns(now: float | None = None) -> int:
+    """Delete chat turns older than TURNS_RETENTION_DAYS (benchmark turns stay: the router learns from them)."""
+    if config.TURNS_RETENTION_DAYS <= 0:
+        return 0
+    cutoff = (now or time.time()) - config.TURNS_RETENTION_DAYS * 86400
+    with connect() as conn:
+        return conn.execute("DELETE FROM turns WHERE source='chat' AND created_at < ?", (cutoff,)).rowcount
 
 
 def main(argv=None) -> None:

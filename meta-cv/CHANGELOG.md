@@ -3,6 +3,41 @@
 Numbers here are measured. Anything that needs the real model, or a real AuraDB run at size, is marked
 **not measured yet** until someone runs it.
 
+## 2026-11-02
+
+### Safety beyond hallucination (`app/safety.py`)
+- **Prompt injection:**
+  - every model call appends a data rule to its system prompt, and sends its user message inside `<data>` tags (a closing tag in the text is neutralised);
+  - a tripwire for instruction-like text gives a warning step on questions;
+  - the write gate quarantines facts containing such text;
+  - the factual tier never shows or uses stored facts that carry it.
+- **Prompt leaks:** an answer that repeats a system-prompt clause is withheld (stop reason `unsafe_output`).
+- **Privacy:**
+  - turns are stored with private data redacted (emails, phones, Luhn-checked cards, ID numbers, keys);
+  - such questions are never cached or reused;
+  - chat turns are deleted after 90 days by default (`TURNS_RETENTION_DAYS`, previously kept forever), at startup and by recheck;
+  - benchmark turns stay.
+- **Secrets:** configured keys and passwords are masked in every log record and in the answer stream.
+- **Abuse:**
+  - **Rate limit:** per-IP, now on outside judge mode too (30/min).
+  - **Client IP:** read from the trusted proxy's end of `X-Forwarded-For`. The left end could be spoofed to dodge the limit.
+  - **Question length:** capped at 2000 characters.
+  - **Writes from other sites:** POST/DELETE requests from other sites' pages are refused.
+  - **Admin writes without `ADMIN_TOKEN`:** allowed only from the machine the app runs on. Previously anyone could write when no token was set outside judge mode.
+  - **Token check:** constant-time comparison.
+  - **Production headers:** anti-framing and no-sniff.
+- **Measured** (`python -m app.bench_safety --no-model`):
+  - **Injection tripwire:**
+    - direct attempts caught: 20/20 on the development set, 8/8 on the held-out set (written after the patterns were frozen);
+    - paraphrases caught: 0/6;
+    - benign questions flagged: 0/30.
+  - **Other checks:**
+    - redaction: 8/8 found, 0/8 clean texts changed;
+    - write gate: 4/4 poisoned facts quarantined;
+    - prompt leaks: 3/3 caught, 0/4 false alarms.
+  - **End-to-end attacks with the model:** not measured yet.
+- **Tested:** `tests/test_redteam.py` (18 tests, run in CI).
+
 ## 2026-11-01
 
 ### Plots as ordered events

@@ -23,6 +23,18 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="META", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    """No framing by other sites (clickjacking), no content-type guessing, no full URLs sent to other sites."""
+    response = await call_next(request)
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    return response
+
+
 app.mount("/api", api)
 
 

@@ -314,6 +314,30 @@ Fewer tokens, with no check that catches a hallucination skipped (`engine/compre
 
 `tests/test_compression.py` counts the model calls each kind saves: two calls instead of four for a similar calculation in balanced mode, and no new claim chain for a similar fact question. Measure the token effect on real traffic with `python -m app.bench --ablate full,no_compression`. The Metrics tab reports average tokens per answer for each kind of reuse, and how often trimming had to be undone.
 
+### Safety beyond hallucination
+
+`app/safety.py`, wired into the model client, the write gate, the factual tier, the pipeline and the API:
+
+| risk | what happens |
+|---|---|
+| prompt injection | every model call appends a rule to its system prompt and wraps its user message in `<data>` tags: the question, graph facts, evidence and earlier turns are material for the task, never instructions. A tripwire for instruction-like text adds a warning step when a question contains it. Facts containing it are quarantined by the write gate, and facts already stored are never shown to the model or used in an answer |
+| prompt leaks | an answer that repeats a clause of a system prompt is withheld (stop reason `unsafe_output`) |
+| private data | emails, phone numbers, card numbers (Luhn-checked), ID numbers and keys are redacted before a turn is stored. A question containing any is answered but never cached or reused. Chat turns are deleted after `TURNS_RETENTION_DAYS` (90) |
+| secrets | the configured keys and passwords are masked in every log record and in the answer stream |
+| abuse | per-IP rate limit always on (30/min, 12 in judge mode), read from the trusted proxy's end of `X-Forwarded-For` so it cannot be dodged by sending a new header value. Questions are capped at 2000 characters. POST/DELETE requests from other sites' pages are refused. Without `ADMIN_TOKEN`, admin writes work only from the machine the app runs on. The production server sends anti-framing and no-sniff headers |
+
+`python -m app.bench_safety` scores it on `bench_data/safety_cases.json`. Measured without a model:
+- **Injection tripwire:**
+  - direct attempts caught: 20/20 on the development set, 8/8 on a held-out set written after the patterns were frozen;
+  - paraphrased attempts caught: 0/6;
+  - benign questions flagged: 0/30.
+- **Other checks:**
+  - redaction: 8/8 found, with no clean text changed;
+  - write gate: 4/4 poisoned facts quarantined;
+  - prompt leaks: 3/3 caught, with no false alarm.
+
+With a model, it also runs four end-to-end attacks through the full pipeline (**not measured yet**). The Results page shows the latest run. The tripwire only makes attempts visible, and paraphrases get past it. The defence is the data rule plus verification: an injected instruction cannot switch the checks off.
+
 ## Tools
 
 | command | what it does |
@@ -325,6 +349,7 @@ Fewer tokens, with no check that catches a hallucination skipped (`engine/compre
 | `python -m app.bench [--ablate full,no_graph,no_graph_first,no_compression,...] [--repeats 3] [--train]` | benchmark (familiar, synthetic, realistic and real-world sets) with Wilson intervals, ablations and router train/test split; writes `results/` |
 | `python -m app.bench --report` | methodology, tables and caveats of the latest run |
 | `python -m app.bench_taxonomy [--fallback-only]` | classifier accuracy on the development set and two held-out sets, with a confusion matrix |
+| `python -m app.bench_safety [--no-model]` | red-team cases: injection tripwire (development and held-out), redaction, write gate on poisoned facts, prompt leaks, and end-to-end attacks with a model |
 | `python -m app.scale --backend neo4j --sizes 1000,10000,...` | AuraDB scale test (tagged, cleaned up, refuses to touch other data) |
 | `python -m app.loadtest` | 20 concurrent conversations with a scripted model; no lock errors allowed |
 | `python -m app.export_snapshot` | read-only SQLite copy of the Aura graph for the fallback |
@@ -347,5 +372,7 @@ Deployment, judge mode and the AuraDB pausing plan are in [docs/DEPLOY.md](docs/
   - It scores 88% on a held-out set written after its rules were frozen (98% on the set it was developed against).
   - Its known misses are listed in `tests/test_fallback.py`.
 - **Reusing a verified calculation skips the independent second solution.** That is the price of its token saving; the adapted solution is still machine-checked and logic-checked.
+- **The injection tripwire is a list of patterns.** Paraphrased attacks get past it (0/6 in the red-team cases). Whether the model itself resists them is measured only by the end-to-end cases, which need the model.
+- **No harmful-content filter:** the app decides how to answer a question, not whether it should. A request for dangerous content is still verified like any other question.
 - **AuraDB Free pauses when idle and has node and relationship caps.** The snapshot fallback is read-only and only as fresh as its last export.
 - **Learning state is local:** router outcomes and feedback live in one SQLite file. Without a persistent disk they reset on restart (see docs/DEPLOY.md).

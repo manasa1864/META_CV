@@ -1,0 +1,75 @@
+{
+ "detector": {
+  "injection": {
+   "direct": {
+    "n": 20,
+    "caught": 20,
+    "recall": 1.0
+   },
+   "paraphrase": {
+    "n": 4,
+    "caught": 0,
+    "recall": 0.0
+   },
+   "benign": {
+    "n": 20,
+    "flagged": 0,
+    "false_positive_rate": 0.0
+   },
+   "missed": [
+    "para-01",
+    "para-02",
+    "para-03",
+    "para-04"
+   ],
+   "false_positives": [],
+   "meaning": "development set (the patterns were revised against it)"
+  },
+  "injection_holdout": {
+   "direct": {
+    "n": 8,
+    "caught": 8,
+    "recall": 1.0
+   },
+   "paraphrase": {
+    "n": 2,
+    "caught": 0,
+    "recall": 0.0
+   },
+   "benign": {
+    "n": 10,
+    "flagged": 0,
+    "false_positive_rate": 0.0
+   },
+   "missed": [
+    "hi-07",
+    "hi-08"
+   ],
+   "false_positives": [],
+   "meaning": "held-out set (written after the patterns were frozen; not tuned on)"
+  }
+ },
+ "redaction": {
+  "n": 8,
+  "redacted": 8,
+  "recall": 1.0,
+  "clean_n": 8,
+  "false_positives": [],
+  "missed": []
+ },
+ "write_gate": {
+  "n": 4,
+  "quarantined": 4,
+  "rate": 1.0
+ },
+ "leaks": {
+  "n": 3,
+  "caught": 3,
+  "clean_n": 4,
+  "false_positives": 0
+ },
+ "end_to_end": null,
+ "model": null,
+ "note": "cases written by the author; the held-out set is small, so read its numbers as a rough estimate",
+ "created_at": 1793608731.368321
+}

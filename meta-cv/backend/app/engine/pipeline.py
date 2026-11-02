@@ -17,7 +17,7 @@ import logging
 import re
 import time
 
-from .. import config, llm, meter
+from .. import config, llm, meter, safety
 from ..db import connect
 from ..graph_common import GraphLimitError, GraphUnavailable, ReadOnlyGraph
 from . import cache, factual, guardrails, memory, planner, reasoning, router, states
@@ -110,6 +110,12 @@ def _false_premise(r: dict, result: dict) -> dict | None:
 def _solve(store, question: str, mode: str, conversation_id: str | None, force_tier: str | None, reuse: bool,
            flags: dict, meter_: dict, trace: Trace):
     reasoning_mode = None if mode == "auto" else mode
+    signals = safety.injection_signals(question)
+    if signals:
+        meter_["injection"] = signals
+        yield trace.note("safety", "The question contains instruction-like text",
+                         f"Patterns: {', '.join(signals)}. It is handled as a question to answer: the model is told to "
+                         "treat it as data, and every claim is still verified, so it cannot switch the checks off.", "warn")
     hist = memory.history(conversation_id)
     breaker = health.state()
     verified_only = bool(flags.get("verified_only") or breaker["verified_only"])
@@ -198,9 +204,21 @@ def _reuse_kind(result: dict) -> str | None:
     return result.get("compressed") or ("similar_state" if result.get("reused_state") else None)
 
 
+def _leak_check(result: dict, trace: Trace):
+    """Generator: an answer that repeats the system prompts is replaced by a refusal."""
+    if not safety.leaks_prompt(result["answer"]):
+        return result
+    yield trace.note("safety", "The answer repeated internal instructions", "It was withheld.", "fail")
+    return {**result, "answer": "I can't share my internal instructions. Ask me a question and I'll answer it.",
+            "confidence": "low", "path": [], "cacheable": False,
+            "stopped": {"reason": "unsafe_output", "detail": "the answer repeated the system prompt"}}
+
+
 def _log(conversation_id, question, result, meter_, source, degraded) -> int:
+    """Stored with private data redacted (safety.redact)."""
     saved = result.get("tokens", 0) if result.get("from_cache") else 0
     r = result.get("route") or {}
+    question, answer = safety.redact(question)[0], safety.redact(result["answer"])[0]
     with connect() as conn:
         cur = conn.execute(
             "INSERT INTO turns(conversation_id, question, hallucination_type, tier, mode, confidence, from_cache, "
@@ -209,7 +227,7 @@ def _log(conversation_id, question, result, meter_, source, degraded) -> int:
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (conversation_id, question, result["hallucination_type"], result["tier"], result.get("mode"),
              result["confidence"], int(bool(result.get("from_cache"))), int(bool(result.get("reused_state"))),
-             json.dumps(result.get("caught", [])), meter_["prompt"], meter_["completion"], saved, result["answer"],
+             json.dumps(result.get("caught", [])), meter_["prompt"], meter_["completion"], saved, answer,
              json.dumps(memory.commitments_of(result.get("standalone") or question, result)), source,
              _outcome(result), "self", router.dumps(r) if r else None,
              json.dumps(result.get("stopped")) if result.get("stopped") else None, degraded,
@@ -236,10 +254,14 @@ def run(store, question: str, mode: str = "auto", typing_delay: float = 0.015, c
     flags = flags or {}
     meter_ = meter.new_meter(limits)
     meter_["flags"] = flags
+    private = safety.redact(question)[1]
+    if private:  # answered, but never cached or reused: the cache and the states would keep the raw question
+        reuse = False
     try:
         try:
             result = yield from meter.metered(
                 _solve(store, question, mode, conversation_id, force_tier, reuse, flags, meter_, trace), meter_)
+            result = yield from _leak_check(result, trace)
         except meter.BudgetExceeded as e:
             yield trace.note("budget", "Per-question budget used up", str(e), "fail")
             result = {**_stop(None, "budget", str(e), "This question needed more work than one answer is allowed "
@@ -278,7 +300,7 @@ def run(store, question: str, mode: str = "auto", typing_delay: float = 0.015, c
 
     health.record(rejected=bool(result.get("stopped")) or any(c["action"] == "dropped" for c in result.get("caught", [])))
     yield {"type": "thinking_done", "message": "Processing complete"}
-    for chunk in _chunks(result["answer"]):
+    for chunk in _chunks(safety.mask_secrets(result["answer"])):
         yield {"type": "answer", "delta": chunk}
         if typing_delay:
             time.sleep(typing_delay)
@@ -313,4 +335,5 @@ def run(store, question: str, mode: str = "auto", typing_delay: float = 0.015, c
                         "context": meter_.get("compression", {})},
         "premises": result.get("premises") or [],
         "path": result["path"],
+        "safety": {"injection": meter_.get("injection", []), "private_data": private},
     }

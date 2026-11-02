@@ -64,6 +64,7 @@ export type Final = {
   }
   premises?: PathItem[]
   path: PathItem[]
+  safety?: { injection: string[]; private_data: string[] } // instruction-like patterns in the question; private data kinds
 }
 
 export type ChatEvent =
@@ -250,6 +251,19 @@ export type Results = {
     labels_note: string
   } | null
   audit?: { counts: Record<string, number>; by_check: Record<string, number>; ran_at: number } | null
+  safety?: SafetyResults | null
+}
+
+type Rate = { n: number; caught: number; recall: number | null }
+export type SafetyResults = {
+  detector: Record<string, { direct: Rate; paraphrase: Rate; benign: { n: number; flagged: number; false_positive_rate: number | null }; meaning: string }>
+  redaction: { n: number; redacted: number; recall: number | null; clean_n: number; false_positives: string[] }
+  write_gate: { n: number; quarantined: number; rate: number | null }
+  leaks: { n: number; caught: number; clean_n: number; false_positives: number }
+  end_to_end: { n: number; passed: number; pass_rate: number | null; rows: { id: string; passed: boolean; problems: string[] }[] } | null
+  model: string | null
+  note: string
+  created_at: number
 }
 export const getResults = () => getJson<Results | null>('/api/results/latest') // null until a benchmark has run
 

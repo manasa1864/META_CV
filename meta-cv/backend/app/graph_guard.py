@@ -4,14 +4,15 @@ A fact is written only if it passes: validate (no contradiction of a single-valu
 the relation's type signature (engine/entity_types.py: no year where a place belongs, no place where a
 person belongs),
 no incompatible_with / contradicts clash for the same subject, no cycle or self-loop in an acyclic
-relation, and no new name that looks like a near-duplicate of an existing entity. Anything else
+relation, no new name that looks like a near-duplicate of an existing entity, and no instruction-like
+text (safety.injection_signals: a fact must not carry a prompt injection into the model). Anything else
 is quarantined with its reason (a table in the state database, never nodes in the fact graph),
 listed at GET /quarantine. Writes invalidate the cache entries that depended on the changed triple.
 """
 import difflib
 import time
 
-from . import state_cache
+from . import safety, state_cache
 from .db import connect
 from .engine import entity_types
 from .engine.entities import alias_candidates, normalize
@@ -41,6 +42,9 @@ def _duplicate_of(store, name: str) -> str | None:
 
 def problems(store, s: str, r: str, o: str) -> list[str]:
     """Why this fact must not be written (empty list = it may be)."""
+    signals = safety.injection_signals(f"{s}\n{r}\n{o}")
+    if signals:  # checked first: a supported-looking fact must not smuggle instructions into prompts
+        return [f"the fact contains instruction-like text ({', '.join(signals)}), a prompt-injection risk"]
     out = []
     v = store.validate(s, r, o)
     if v["verdict"] == "contradicted":

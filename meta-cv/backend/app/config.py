@@ -86,7 +86,9 @@ STALE_DAYS = _num("STALE_DAYS", 365)                           # audit flags fac
 FRESH_DAYS = _num("FRESH_DAYS", 30)                            # questions about the present: older facts get a date note
 STATE_MAX_ROWS = _int("STATE_MAX_ROWS", 5000)                  # cap on reasoning_states (least-hit pruned)
 STATE_CACHE_MAX_AGE_DAYS = _num("STATE_CACHE_MAX_AGE_DAYS", 30)
-TURNS_RETENTION_DAYS = _num("TURNS_RETENTION_DAYS", 0)         # 0 keeps every turn
+# Chat turns (questions and answers, stored redacted) older than this are deleted at startup and by recheck;
+# benchmark turns stay, the router learns from them. 0 keeps every turn.
+TURNS_RETENTION_DAYS = _num("TURNS_RETENTION_DAYS", 90)
 AUDIT_CACHE_SECONDS = _num("AUDIT_CACHE_SECONDS", 300)
 
 # Token compression (engine/compression.py): trimmed prompts, answering from a similar question's verified
@@ -120,7 +122,14 @@ SCRIPTED_DEMO = _flag("SCRIPTED_DEMO")
 JUDGE_MODE = _flag("JUDGE_MODE")
 if JUDGE_MODE:
     ROUTER_FROZEN = True
-ADMIN_TOKEN = _env("ADMIN_TOKEN")
-RATE_LIMIT_PER_MIN = _int("RATE_LIMIT_PER_MIN", 12)
+ADMIN_TOKEN = _env("ADMIN_TOKEN")      # without it, admin writes are open only to requests from this machine
+RATE_LIMIT_PER_MIN = _int("RATE_LIMIT_PER_MIN", 12 if JUDGE_MODE else 30)   # chat questions per IP; 0 = no limit
+MAX_QUESTION_CHARS = _int("MAX_QUESTION_CHARS", 2000)
+# Proxies in front of the app that append to X-Forwarded-For (1 on a typical host). The client IP is read that
+# many entries from the right, because the left end of the header is whatever the client sent. 0 ignores it.
+TRUSTED_PROXY_HOPS = _int("TRUSTED_PROXY_HOPS", 1)
+# Pages that may send POST/DELETE requests besides the app's own origin (the Vite dev server by default)
+ALLOWED_ORIGINS = {o.strip().rstrip("/") for o in _env(
+    "ALLOWED_ORIGINS", default="http://localhost:5173,http://127.0.0.1:5173").split(",") if o.strip()}
 DAILY_TOKEN_BUDGET = _int("DAILY_TOKEN_BUDGET", 2_000_000)
 MAX_CONCURRENT = _int("MAX_CONCURRENT", 8)

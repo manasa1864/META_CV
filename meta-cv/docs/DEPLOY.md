@@ -21,13 +21,16 @@ container sets `META_NO_HOME_ENV=1` so nothing reads `~/.meta_cv/.env`.
 | `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`, `NEO4J_DATABASE` | from the Aura credentials file |
 | `META_API_KEY`, `META_BASE_URL`, `META_MODEL` | the model |
 | `JUDGE_MODE` | `1` - read-only graph, frozen router, per-IP rate limit, daily token budget |
-| `ADMIN_TOKEN` | long random string; write endpoints need header `X-Admin-Token` |
+| `ADMIN_TOKEN` | long random string; write endpoints need header `X-Admin-Token`. Without it, writes work only from the machine the app runs on, so a deployment without a token is not writable by visitors |
+| `TRUSTED_PROXY_HOPS` | proxies in front of the app that append to `X-Forwarded-For` (default `1`, right for a typical host). The rate limit reads the client IP that many entries from the right, because the left end is whatever the client sent. `0` if the app is exposed directly |
+| `ALLOWED_ORIGINS` | other sites allowed to send POST/DELETE requests (default: the Vite dev server only). The app's own origin is always allowed |
 | `DB_PATH` | path on a persistent volume if the host has one (default `/data/meta.db`) |
 | `PORT` | the port the host expects (Hugging Face Spaces: `7860`) |
 | `META_JUDGE_MODEL` | optional: a different model for the independent checks, so the drafter does not check itself (`META_JUDGE_BASE_URL` / `META_JUDGE_API_KEY` if it is on another API) |
 | `WIKIDATA_LOOKUP` | optional: `0` turns off the Wikidata evidence lookup (on by default; needs outbound HTTPS to wikidata.org) |
 | `CHECK_WORKERS` | optional: model checks run at the same time (default `6`); lower it if the model API rate-limits, `1` checks one by one |
-| optional | `RATE_LIMIT_PER_MIN` (12), `DAILY_TOKEN_BUDGET` (2000000), `MAX_CONCURRENT` (8), `LLM_TIMEOUT` (30) |
+| optional | `RATE_LIMIT_PER_MIN` (12 in judge mode, 30 otherwise; `0` = off), `MAX_QUESTION_CHARS` (2000), `DAILY_TOKEN_BUDGET` (2000000), `MAX_CONCURRENT` (8), `LLM_TIMEOUT` (30) |
+| `TURNS_RETENTION_DAYS` | chat turns are kept this long, with private data already redacted (default `90`; `0` keeps them). Benchmark turns are kept |
 
 ## Where state lives
 

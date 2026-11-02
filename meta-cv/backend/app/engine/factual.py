@@ -36,7 +36,7 @@ import difflib
 import re
 import time
 
-from .. import config, llm, state_cache
+from .. import config, llm, safety, state_cache
 from ..db import connect
 from ..graph_common import EXCLUSIVE_RELATIONS
 from . import compression, decompose, entity_types, guardrails, parallel, temporal, wikidata
@@ -385,6 +385,14 @@ def walk(store, question: str, entities: list[str], trace: Trace, prior: dict | 
     for e in entities:
         for f in store.facts_about(e):
             add(f)
+    unsafe = [f for f in known if safety.fact_signals(f)]
+    if unsafe:  # written before the write gate checked for it, or straight into the store
+        known = [f for f in known if not safety.fact_signals(f)]
+        seen.difference_update((f["subject"], f["relation"], f["object"]) for f in unsafe)
+        yield trace.note("safety", "Ignored stored facts that contain instructions",
+                         f"{len(unsafe)} fact(s) about {', '.join(sorted({f['subject'] for f in unsafe}))} carry "
+                         "instruction-like text, so they are not shown to the model or used (prompt-injection risk).",
+                         "warn")
     yield trace.settle(ev, "ok" if known else "warn",
                        f"{len(known)} stored fact(s) found" if known else "No stored facts; every node will need independent checks")
     n_graph = len(known)
@@ -577,6 +585,9 @@ def answer(store, question: str, entities: list[str], trace: Trace, prior: dict 
         if reused:
             return reused
     checked, found = yield from walk(store, question, entities, trace, prior, earlier, verified_only, time_sensitive)
+    for c in checked:  # a claim carrying instructions never reaches the composer, however it was verified
+        if c["status"] == "accepted" and safety.fact_signals(c):
+            c.update(status="rejected", reason="contains instruction-like text (prompt-injection risk)")
     accepted = [c for c in checked if c["status"] == "accepted"]
     ended = [c for c in checked if c.get("ended")]
     missing = [c for c in checked if c["status"] != "accepted" and not c.get("ended")]

@@ -1,5 +1,6 @@
 """Meta API (OpenAI-compatible) client: one shared client, timeouts, retry with backoff and jitter,
-a circuit breaker, and per-question metering/budgets (meter.py)."""
+a circuit breaker, and per-question metering/budgets (meter.py). Every call carries the injection rule
+(safety.DATA_RULE) and sends its user message as delimited data."""
 import json
 import random
 import re
@@ -9,7 +10,7 @@ import time
 import openai
 from openai import OpenAI
 
-from . import config
+from . import config, safety
 from .meter import metered, metering, new_meter  # noqa: F401  (re-exported for callers)
 from .meter import before_llm_call, record_llm
 
@@ -99,7 +100,8 @@ def _complete(system: str, user: str, temperature: float, judge: bool = False):
         try:
             resp = _client(judge).chat.completions.create(
                 model=judge_model() if judge else config.META_MODEL, temperature=temperature,
-                messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                messages=[{"role": "system", "content": system + safety.DATA_RULE},
+                          {"role": "user", "content": safety.as_data(user)}],
             )
             breaker.success()
             return resp

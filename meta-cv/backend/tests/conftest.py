@@ -35,6 +35,8 @@ def fresh_db():
     db.init_db()
     health.reset()
     audit.clear_cache()
+    if "app.main" in sys.modules:  # the per-IP rate limit must not carry over from one test to the next
+        sys.modules["app.main"]._hits.clear()
     yield
 
 

@@ -1,10 +1,12 @@
 """HTTP API. In development Vite proxies /api/* here with the prefix stripped; in production
 app.server mounts this app under /api next to the built frontend, so the paths match.
 
-JUDGE_MODE=1: the graph is read-only (writes need the X-Admin-Token header), the router is frozen,
-chat is rate limited per IP, and a concurrency cap and a daily token budget apply. Error responses
-carry a short code and a safe message; details go to the server log only.
+Always: chat is rate limited per IP, with a concurrency cap and a daily token budget; POST/DELETE requests
+from another site's page are refused; admin writes need ADMIN_TOKEN, or come from this machine when none is
+set. JUDGE_MODE=1 also makes the graph read-only (writes need the X-Admin-Token header) and freezes the
+router. Error responses carry a short code and a safe message; details go to the server log only.
 """
+import hmac
 import json
 import logging
 import threading
@@ -13,12 +15,13 @@ from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from contextlib import asynccontextmanager
 from typing import Literal
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import audit, config, graph_guard, ingest as ingest_mod, llm, metrics, state_cache
+from . import audit, config, graph_guard, ingest as ingest_mod, llm, metrics, recheck, safety, state_cache
 from .db import connect, init_db
 from .engine import pipeline, plots
 from .engine.health import health
@@ -31,7 +34,9 @@ store = get_store()
 
 
 def startup() -> None:
+    safety.install_log_masking()
     init_db()
+    recheck.prune_turns()
 
 
 @asynccontextmanager
@@ -67,13 +72,42 @@ async def _internal(_: Request, e: Exception):
     return JSONResponse({"code": "internal", "message": pipeline.ERRORS["internal"]}, status_code=500)
 
 
-def require_admin(x_admin_token: str | None = Header(default=None)) -> None:
-    """Writes: open in development; with ADMIN_TOKEN set they need it; in judge mode without a token they are closed."""
-    if config.ADMIN_TOKEN:
-        if x_admin_token != config.ADMIN_TOKEN:
+@app.middleware("http")
+async def same_origin_writes(request: Request, call_next):
+    """A page on another site must not make a visitor's browser post to this API (CSRF). Browsers send Origin
+    on cross-site POSTs; requests without one (curl, scripts) are not from a page and pass."""
+    origin = request.headers.get("origin")
+    if request.method in ("POST", "PUT", "PATCH", "DELETE") and origin:
+        hosts = {request.headers.get("host"), request.headers.get("x-forwarded-host")}
+        if urlsplit(origin).netloc not in hosts and origin.rstrip("/") not in config.ALLOWED_ORIGINS:
+            return JSONResponse({"code": "forbidden_origin", "message": "Requests from other sites are not accepted."},
+                                status_code=403)
+    return await call_next(request)
+
+
+LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+def _is_local(request: Request) -> bool:
+    """From this machine, not through a proxy."""
+    return bool(request.client) and request.client.host in LOCAL_HOSTS and "x-forwarded-for" not in request.headers
+
+
+def _writes(request: Request) -> str:
+    """How admin writes work for this request: token, closed, or open (no token set, request from this machine)."""
+    return "token" if config.ADMIN_TOKEN else "closed" if config.JUDGE_MODE or not _is_local(request) else "open"
+
+
+def require_admin(request: Request, x_admin_token: str | None = Header(default=None)) -> None:
+    """Writes: with ADMIN_TOKEN set they need it; without one they are open only from this machine (development),
+    and closed in judge mode."""
+    mode = _writes(request)
+    if mode == "token":
+        if not hmac.compare_digest((x_admin_token or "").encode(), config.ADMIN_TOKEN.encode()):
             raise HTTPException(403, "this endpoint needs an admin token")
-    elif config.JUDGE_MODE:
-        raise HTTPException(403, "this deployment is read-only")
+    elif mode == "closed":
+        raise HTTPException(403, "this deployment is read-only" if config.JUDGE_MODE else
+                            "admin writes from another machine need ADMIN_TOKEN set on the server")
 
 
 _hits: dict = defaultdict(deque)
@@ -82,13 +116,17 @@ _slots = threading.BoundedSemaphore(max(1, config.MAX_CONCURRENT))
 
 
 def _client_ip(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for")
-    return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "unknown")
+    """The address the nearest trusted proxy saw. The left end of X-Forwarded-For is whatever the client sent, so
+    reading it would let anyone dodge the rate limit by sending a new value each time."""
+    fwd = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
+    if config.TRUSTED_PROXY_HOPS > 0 and len(fwd) >= config.TRUSTED_PROXY_HOPS:
+        return fwd[-config.TRUSTED_PROXY_HOPS]
+    return request.client.host if request.client else "unknown"
 
 
 def chat_guard(request: Request) -> None:
-    """Rate limit (judge mode) and the global daily token budget."""
-    if config.JUDGE_MODE:
+    """Rate limit per IP and the global daily token budget."""
+    if config.RATE_LIMIT_PER_MIN > 0:
         now, ip = time.time(), _client_ip(request)
         with _hits_lock:
             q = _hits[ip]
@@ -148,14 +186,14 @@ def readyz():
 
 
 @app.get("/status")
-def status():
+def status(request: Request):
     """Cheap state for the UI banner: model availability, degraded graph, verified-only mode."""
     llm_status = {"configured": True, "breaker_open": False} if config.SCRIPTED_DEMO else llm.status()
     return {"llm": llm_status, "scripted": config.SCRIPTED_DEMO, "degraded": getattr(store, "degraded", None),
             "health": health.state(), "judge_mode": config.JUDGE_MODE, "router_frozen": config.ROUTER_FROZEN,
             "backend": store.backend,
             # how admin writes (review, quarantine, rules) work here - mirrors require_admin
-            "writes": "token" if config.ADMIN_TOKEN else "closed" if config.JUDGE_MODE else "open"}
+            "writes": _writes(request)}
 
 
 # ------------------------------------------------------------------------------------- graph
@@ -384,7 +422,7 @@ def reject_item(item_id: int):
 
 # ------------------------------------------------------------------------------------- chat
 class ChatRequest(BaseModel):
-    question: str = Field(min_length=1, max_length=4000)
+    question: str = Field(min_length=1, max_length=config.MAX_QUESTION_CHARS)
     mode: Literal["auto", "conservative", "balanced", "aggressive"] = "auto"  # reasoning-tier strictness
     conversation_id: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_.:-]*$")
 
