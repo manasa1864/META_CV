@@ -240,12 +240,19 @@ class ResilientStore:
     def __init__(self, make_primary, snapshot_path: str):
         self._make_primary, self._snapshot_path = make_primary, snapshot_path
         self._primary, self._snapshot, self._failed_at = None, None, 0.0
-        self.degraded: str | None = None
+        self._degraded: str | None = None
         try:
             self._primary = make_primary()
         except GraphUnavailable as e:
             log.warning("graph unavailable at startup (%s); using the snapshot", e)
             self._degrade()
+
+    @property
+    def degraded(self) -> str | None:
+        """"graph_snapshot" while Aura is unreachable. Reading it retries Aura (at most once per GRAPH_RECOVER_SECONDS), so
+        the UI banner clears by itself when Aura is back, without waiting for a question to trigger the retry."""
+        self._maybe_recover()
+        return self._degraded
 
     @property
     def backend(self) -> str:
@@ -256,7 +263,7 @@ class ResilientStore:
         return bool(self.degraded)
 
     def _degrade(self) -> None:
-        self.degraded, self._failed_at = "graph_snapshot", time.time()
+        self._degraded, self._failed_at = "graph_snapshot", time.time()
 
     def _fallback(self):
         if self._snapshot is None:
@@ -268,17 +275,19 @@ class ResilientStore:
         return self._snapshot
 
     def _maybe_recover(self) -> None:
-        if self.degraded and time.time() - self._failed_at > config.GRAPH_RECOVER_SECONDS:
+        if self._degraded and time.time() - self._failed_at > config.GRAPH_RECOVER_SECONDS:
+            self._failed_at = time.time()   # one attempt per interval, also when several requests ask at once
             try:
                 self._primary = self._primary or self._make_primary()
                 self._primary.ping()
-                self.degraded = None
+                self._degraded = None
+                log.info("the graph is reachable again; leaving the snapshot")
             except GraphUnavailable:
-                self._failed_at = time.time()
+                pass
 
     def __getattr__(self, name):
         self._maybe_recover()
-        if self.degraded:
+        if self._degraded:
             return getattr(self._fallback(), name)
         attr = getattr(self._primary, name)
         if not callable(attr):

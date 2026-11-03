@@ -200,6 +200,7 @@ def _guarded(store, question: str, mode: str, conversation_id: str | None, force
     if not signals:
         return (yield from _solve(store, question, mode, conversation_id, force_tier, reuse, flags, meter_, trace))
     meter_["injection"] = signals
+    plain_flags = flags   # the plain question (instructions removed) is not under the verified-only policy: see below
     detail = (f"Patterns: {', '.join(signals)}. It is handled as a question to answer: the model is told to treat it "
               "as data, every claim is still verified, and nothing from it is cached.")
     if config.ADVERSARIAL_ROUTING and not flags.get("verified_only") and not flags.get("no_adversarial_routing"):
@@ -224,7 +225,9 @@ def _guarded(store, question: str, mode: str, conversation_id: str | None, force
     ev = trace.start("safety", "Invariance check: answering again without the instruction-like text", f"“{clean}”")
     yield ev
     try:
-        alt = invariance.drain(_solve(store, clean, mode, conversation_id, force_tier, False, flags, meter_, Trace()))
+        # The adversarial policy guards against the instructions, which this question no longer has; running it under
+        # verified-only too would make it abstain on any question the graph does not hold ("Who wrote Hamlet?").
+        alt = invariance.drain(_solve(store, clean, mode, conversation_id, force_tier, False, plain_flags, meter_, Trace()))
     except meter.BudgetExceeded:
         yield trace.settle(ev, "warn", "Skipped: the per-question budget ran out before the second answer.")
         return _adversarial(result)
@@ -386,6 +389,7 @@ def run(store, question: str, mode: str = "auto", typing_delay: float = 0.015, c
         "caught": result.get("caught", []),
         "withheld": result.get("withheld", 0),
         "stopped": result.get("stopped"),
+        "memory_summary": bool(result.get("memory_summary")),   # the answer is the model's memory, not verified
         "degraded": degraded,
         "verified_only": health.state()["verified_only"],
         "tokens": {"prompt": meter_["prompt"], "completion": meter_["completion"],

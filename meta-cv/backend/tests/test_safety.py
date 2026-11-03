@@ -383,6 +383,26 @@ def test_graph_unreachable_falls_back_to_the_snapshot(fake_llm, tmp_path):
         store.add_fact("a", "likes", "b")
 
 
+def test_the_degraded_banner_clears_by_itself_when_the_graph_comes_back(tmp_path, monkeypatch):
+    attempts = []
+
+    class Reachable(SqliteGraphStore):
+        def ping(self):
+            return True
+
+    def flaky():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise GraphUnavailable("waking up")
+        return Reachable()
+
+    store = ResilientStore(flaky, str(tmp_path / "none.db"))
+    assert store.degraded == "graph_snapshot" and store.backend == "snapshot"     # failed at startup
+    assert store.degraded == "graph_snapshot" and len(attempts) == 1              # not retried more than once a minute
+    monkeypatch.setattr(config, "GRAPH_RECOVER_SECONDS", -1)   # the interval has passed
+    assert store.degraded is None and store.backend == "neo4j" and len(attempts) == 2   # reading the status retried it
+
+
 def test_graph_failing_mid_run_switches_to_the_snapshot(tmp_path):
     snap = tmp_path / "snap.db"
     SqliteGraphStore(str(snap)).add_fact("a", "likes", "b", "seed")

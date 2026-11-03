@@ -102,6 +102,7 @@ def _complete(system: str, user: str, temperature: float, judge: bool = False):
                 model=judge_model() if judge else config.META_MODEL, temperature=temperature,
                 messages=[{"role": "system", "content": system + safety.DATA_RULE},
                           {"role": "user", "content": safety.as_data(user)}],
+                **({"reasoning_effort": config.META_REASONING_EFFORT} if config.META_REASONING_EFFORT else {}),
             )
             breaker.success()
             return resp
@@ -114,6 +115,51 @@ def _complete(system: str, user: str, temperature: float, judge: bool = False):
         time.sleep(min(8.0, 0.5 * 2 ** attempt) + random.random() * 0.3)
     breaker.failure()
     raise LLMUnavailable(f"the language model failed after {config.LLM_RETRIES} attempts") from last
+
+
+def web_search(question: str, system: str) -> dict:
+    """The model's built-in web search (Responses API `web_search` tool): it searches, reads pages and answers with
+    citations. Returns {"text": the final answer, "citations": [{"url", "title"}], "results": [{"url", "title"}]}.
+    Same retry, breaker and metering as every other call. Raises LLMUnavailable / LLMNotConfigured."""
+    if breaker.is_open():
+        raise LLMUnavailable("the language model is temporarily unavailable")
+    before_llm_call()
+    last = None
+    for attempt in range(max(1, config.LLM_RETRIES)):
+        try:
+            resp = _client().responses.create(
+                model=config.META_MODEL, instructions=system + safety.DATA_RULE, input=safety.as_data(question),
+                tools=[{"type": "web_search"}], include=["web_search_call.results"],
+                **({"reasoning": {"effort": config.META_REASONING_EFFORT}} if config.META_REASONING_EFFORT else {}),
+            )
+            breaker.success()
+            break
+        except _RETRYABLE as e:
+            last = e
+        except openai.APIStatusError as e:
+            if e.status_code < 500:
+                raise
+            last = e
+        time.sleep(min(8.0, 0.5 * 2 ** attempt) + random.random() * 0.3)
+    else:
+        breaker.failure()
+        raise LLMUnavailable(f"the language model failed after {config.LLM_RETRIES} attempts") from last
+    text, cites, results = "", [], []
+    for item in resp.output or []:
+        if item.type == "message":   # the last message is the answer; earlier ones are "I'll search..." narration
+            blocks = [b for b in item.content if b.type == "output_text"]
+            text = "".join(b.text for b in blocks) or text
+            cites = [{"url": a.url, "title": getattr(a, "title", "") or ""} for b in blocks
+                     for a in (b.annotations or []) if a.type == "url_citation"] or cites
+        elif item.type == "web_search_call":
+            results += [{"url": r.url, "title": getattr(r, "title", "") or ""} for r in (getattr(item, "results", None) or [])
+                        if getattr(r, "url", None)]
+    u = getattr(resp, "usage", None)
+    if u is not None and getattr(u, "input_tokens", None) is not None:
+        record_usage(u.input_tokens, u.output_tokens or 0)
+    else:
+        record_usage(estimate_tokens(question), estimate_tokens(text))
+    return {"text": text, "citations": cites, "results": results}
 
 
 def _parse_json(text: str):

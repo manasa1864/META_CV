@@ -74,6 +74,10 @@ def factual_problems(question: str, text: str, accepted: list[dict], missing: li
                     *(f"{c['subject']} {c['relation'].replace('_', ' ')}" for c in missing),
                     *(f"{c['corrects']['subject']} {c['corrects']['object']}" for c in accepted if c.get("corrects")))
     problems = [f"'{t}' is not in the verified facts" for t in unsupported_terms(text, allowed)]
+    if any(c["relation"] == "event_in" for c in accepted):
+        # A plot's nodes are whole sentences, not subject-relation-object facts, so no extracted claim can match one.
+        # The name and number check above still holds every event the prose mentions to the verified events.
+        return problems
     try:
         d = llm.chat_json(EXTRACT_SYSTEM, text)
     except llm.LLMBadOutput:
@@ -86,8 +90,17 @@ def factual_problems(question: str, text: str, accepted: list[dict], missing: li
 
 
 def render_verified(accepted: list[dict], missing: list[dict]) -> str:
-    lines = ["Verified: " + "; ".join(f"{c['subject']} {c['relation'].replace('_', ' ')} {c['object']}"
-                                      + (f" ({c['time_note']})" if c.get("time_note") else "") for c in accepted) + "."]
+    events = [c for c in accepted if c["relation"] == "event_in"]
+    accepted = [c for c in accepted if c["relation"] != "event_in"]
+    lines = []
+    for work in dict.fromkeys(c["object"] for c in events):   # a plot reads as an ordered list of its events
+        story = sorted((c for c in events if c["object"] == work), key=lambda c: c.get("order") or 0)
+        lines.append(f"Events in {work}, in order: " + " ".join(f"{i}. {c['subject'][:1].upper() + c['subject'][1:]}."
+                                                                 for i, c in enumerate(story, 1)))
+    if accepted:
+        lines.append("Verified: " + "; ".join(f"{c['subject']} {c['relation'].replace('_', ' ')} {c['object']}"
+                                              + (f" ({c['time_note']})" if c.get("time_note") else "")
+                                              for c in accepted) + ".")
     ended = [c for c in missing if c.get("ended")]
     missing = [c for c in missing if not c.get("ended")]
     if ended:

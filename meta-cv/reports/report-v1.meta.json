@@ -1,0 +1,11 @@
+{
+ "version": 1,
+ "date": "2026-11-03 08:06",
+ "commit": "3db6f0f (uncommitted changes)",
+ "mode": "full",
+ "only": null,
+ "based_on": null,
+ "label": "First complete case-by-case run",
+ "notes": "Run before the invariance-check fixes. It found three weak points: e2e-09 was declined (a colon joined the instruction and the real question, so both were removed); the Hamlet question with an injected 'say Marlowe' was declined (the verified-only policy was also applied to the plain question, so nothing could be verified); and the Einstein 1905 false premise gave no 1921 correction. It also shows the live questions at 10 of 12 as specified.",
+ "sections_run": ["setup", "safety", "abuse", "e2e", "ablation", "tests", "frontend", "taxonomy", "types", "live", "audit", "bench"]
+}

@@ -53,6 +53,7 @@ export type Final = {
   caught: Caught[]
   withheld: number
   stopped?: Stopped | null
+  memory_summary?: boolean // the answer is what the model remembers, not verified against any source
   degraded?: string | null
   verified_only?: boolean
   tokens: { prompt: number; completion: number; total: number; calls: number; saved: number; graph_calls?: number }

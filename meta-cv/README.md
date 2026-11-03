@@ -164,6 +164,57 @@ and whether it is the drafter.
 
 **Privacy:** only the claim's names and the property go to wikidata.org. `WIKIDATA_LOOKUP=0` turns it off.
 
+**Evidence found on the web** (`engine/websearch.py`). No curated database has to hold everything. When a claim or a
+plot is in none of the graph, Wikidata, the cache or Wikipedia, the model's own web search (Responses API `web_search`
+tool, the same key) finds sources. The model's account of what it read is not trusted as it stands:
+1. **One search per question,** made only when something needs it. The model searches, reads pages and answers,
+   quoting the sentences it relies on.
+2. **Verbatim quotes only.** The app fetches the cited pages itself and keeps only the quotes that occur word for word
+   on a page it fetched. Those form the evidence pool; everything else the model said is ignored.
+3. **A claim is checked against the pool.** Both its names must occur in the quotes, and an independent model call
+   (the judge model, if configured) must find the quotes support it (or contradict it). Then it is accepted (source
+   `web`, medium confidence, cited pages, queued for graph review) or dropped. Anything unsettled falls to the model's
+   own checks as before.
+4. **Plots** use the pool through the same event checks as a Wikipedia article: events must pass a name check and an
+   independent check against the quotes.
+5. **Safe fetching.** Pages are fetched only from public addresses (no localhost, private or link-local ranges,
+   also after redirects), with a size and time limit. Instruction-like sentences are dropped.
+
+If pages cannot be fetched (some sites block bots) the search's own answer is offered, labelled unverified, with its
+low confidence. The order for a plot is: graph, Wikipedia, web quotes, the web answer, the model's memory (all labelled),
+then a clear decline. Cost: about 10-17 s and ~10k tokens for a question that needs a search, plus the search fee
+(listed at $2.50 per 1,000). The question's text is sent to the model API as before. `WEB_SEARCH=0` turns it off.
+
+**Plots from Wikipedia** (`engine/wikipedia.py`). A plot has nothing independent to check: the blind probe cannot
+reproduce "Shen Qiao's defeat", because the model made that label up a moment earlier. So when the graph holds no
+events for a work, the model is never asked to draft one from memory. Instead:
+1. **Find the article.** The work's own Wikipedia article is found. Its title must *be* the work's name (ignoring
+   "The" and "(novel)"), or the name must redirect to it. A longer title is a different work ("The Thousand Autumns of
+   Jacob de Zoet" is not "Thousand Autumns"). Disambiguation pages and non-story articles are skipped.
+2. **List the events.** The model lists the events from the article's plot section, in order.
+3. **Check every event.** Each must pass two checks:
+   - **Name check:** its names and numbers occur in the article text.
+   - **Independent check:** a separate model call (the judge model, if configured) finds it supported by the text.
+4. **Answer.** At least 2 events must pass. The answer cites the article and is **medium confidence**: it is the
+   model's reading of an article, not a stored fact. It is never cached or saved as a reusable state.
+
+**Fallback, in two steps:**
+1. **From memory, labelled.** With no usable article (off, unreachable, not found, no plot section, or too few events
+   verified), the model may say what it remembers of the work. The answer starts "Not verified. I couldn't find a
+   source for X, so this comes from the model's memory and may contain mistakes". It is low confidence, never cached,
+   never saved as a reusable state, and never recorded as a verified fact for follow-up questions. If the model does
+   not recognise the work, or is below 60% sure, it says nothing. `PLOT_MEMORY_FALLBACK=0` turns this step off.
+   Verified-only mode and questions flagged for injection skip it.
+2. **Decline.** Otherwise the app stops with `plot_unavailable`, says why, and says how to add the plot
+   (`POST /plots`, or `POST /ingest` with a summary you trust).
+
+A name that redirects to another page counts only if that page has a real plot section ("Manacled" redirects to its
+author's page, a biography, so it is not used). Instruction-like sentences in an article are dropped before the model
+sees them. `WIKIPEDIA_LOOKUP=0` turns the Wikipedia step off.
+
+**Speed:** Muse Spark thinks at high effort by default (about 30 s for a trivial call). `META_REASONING_EFFORT=low`
+is sent on every call: in a measured plot question, 127 s and 32k tokens became 40 s and 11k tokens.
+
 ### Faster checking
 
 A claim the graph does not hold costs two model calls: the independent judgment and the blind probe.
@@ -368,6 +419,7 @@ Each turn records what the checks saw in `turns.safety`. Refusals that never bec
 
 | command | what it does |
 |---|---|
+| `python -m app.report [--quick] [--only safety,live,...] [--bench N] [--aura-tests]` | **runs the evaluation and writes `report.md`, case by case** (no overall pass/fail): every AI-safety control with one row per case (injection, write gate, source trust campaign, redaction, prompt leaks, abuse controls), attacks through the real pipeline, each novel mechanism switched off in turn, the 12 live questions with every claim and what confirmed it, per-case classification, and every test by name. **Every run is kept as its own version** in `reports/` (`report-v1.md`, `report-v2.md`, ...; each with its raw data and a small metadata file), never overwritten, and `reports/INDEX.md` lists them with what changed and their headline numbers side by side. `report.md` is a copy of the latest. Use `--label` and `--notes` to name a run, `--only live,e2e` to rerun just some sections (the rest are kept from the latest finished version) and `--scratch` to try the report without saving a version. State goes to a throwaway database; `--quick` makes no model calls |
 | `python -m pytest` | all tests (AuraDB variants run when credentials exist; `NEO4J_TESTS=0` skips them) |
 | `python -m app.audit [--fail-on error]` | graph audit: functional violations, incompatible pairs, cycles, near-duplicates, provenance, staleness, relation drift, dangling caches |
 | `python -m app.recheck` | re-validate cached paths and reasoning states; drop expired claims; prune old state |

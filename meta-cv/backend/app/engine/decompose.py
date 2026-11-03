@@ -165,7 +165,11 @@ def fill(store, parts: list[dict], trace: Trace):
             values[k] = sorted({n["object"] for n in nodes})
         if not nodes:
             open_parts.append(k)
-            yield trace.settle(ev, "info", "Not in the graph - the model drafts it, and every claim is verified.")
+            if p["relation"] == plots.EVENT_IN and p["subject"] == UNKNOWN:   # factual.walk reads it from Wikipedia
+                yield trace.settle(ev, "info", "No events stored for this work - its plot is looked up on Wikipedia "
+                                               "and checked against the article; the model never drafts a plot.")
+            else:
+                yield trace.settle(ev, "info", "Not in the graph - the model drafts it, and every claim is verified.")
             continue
         answered += nodes
         corrected = [n for n in nodes if n["source"] == "graph-corrected"]

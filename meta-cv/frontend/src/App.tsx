@@ -894,6 +894,7 @@ const TIER_LINE: Record<string, string> = {
 
 const STOP_REASONS: Record<string, string> = {
   nothing_verified: 'No claim passed verification, so Bloop declined rather than guess.',
+  plot_unavailable: 'No plot is stored for this work and no reliable outside summary was found, so Bloop did not invent one.',
   false_premise: 'The question assumes something the knowledge graph contradicts.',
   graph_conflict: 'The knowledge graph itself holds conflicting facts about this, so Bloop did not answer.',
   premise_unverified: 'The calculation needed a fact that could not be verified.',
@@ -1038,6 +1039,7 @@ function headerFor(m: Assistant): [BloopMood, string, string] {
   if (!m.final) return ['thinking', 'Processing complete', 'lav']
   if (m.recorded) return [m.final.confidence === 'high' ? 'supported' : 'uncertain', 'Recorded run', 'lav']
   if (m.final.stopped) return ['uncertain', 'Stopped instead of guessing', 'sun']
+  if (m.final.memory_summary) return ['uncertain', 'From memory · not verified', 'coral']
   if (m.final.confidence === 'high') return ['supported', 'Checked', 'mint']
   if (m.final.confidence === 'medium') return ['uncertain', 'Some uncertainty', 'sun']
   return ['uncertain', 'Not verified', 'coral']

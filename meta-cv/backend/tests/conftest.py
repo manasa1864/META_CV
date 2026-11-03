@@ -5,7 +5,14 @@ from pathlib import Path
 
 # Must be set before app.config is imported; load_dotenv does not override these.
 os.environ["GRAPH_BACKEND"] = "sqlite"
+# Tests never reach a real model, whatever backend/.env holds: set but empty, so load_dotenv keeps them empty.
+for _name in ("META_API_KEY", "META_BASE_URL", "META_MODEL", "META_REASONING_EFFORT", "META_JUDGE_MODEL", "META_JUDGE_BASE_URL",
+              "META_JUDGE_API_KEY", "ADMIN_TOKEN"):
+    os.environ[_name] = ""
 os.environ["WIKIDATA_LOOKUP"] = "0"  # no network in tests; wikidata tests use a mock transport
+os.environ["WIKIPEDIA_LOOKUP"] = "0"  # likewise; the wikipedia tests switch it on with a mock transport
+os.environ["WEB_SEARCH"] = "0"  # likewise: the web tests script llm.web_search and a mock page transport
+os.environ["PLOT_MEMORY_FALLBACK"] = "0"  # tests script the model; the memory-fallback tests switch it on
 os.environ["DB_PATH"] = os.path.join(tempfile.mkdtemp(), "test.db")
 os.environ["RESULTS_DIR"] = os.path.join(tempfile.mkdtemp(), "results")
 os.environ["REPLAYS_DIR"] = os.path.join(tempfile.mkdtemp(), "replays")

@@ -68,7 +68,23 @@ META_JUDGE_API_KEY = _env("META_JUDGE_API_KEY")
 # Outside evidence for claims the graph does not hold (engine/wikidata.py). 0 turns the lookup off.
 WIKIDATA_LOOKUP = _env("WIKIDATA_LOOKUP", default="1") != "0"
 WIKIDATA_TIMEOUT = _num("WIKIDATA_TIMEOUT", 6)
-LLM_TIMEOUT = _num("LLM_TIMEOUT", 30)
+# A plot the graph lacks is read from the work's Wikipedia article and checked against it (engine/wikipedia.py).
+# 0 turns it off; plot questions the graph cannot answer are then declined. Same timeout as Wikidata.
+WIKIPEDIA_LOOKUP = _env("WIKIPEDIA_LOOKUP", default="1") != "0"
+# Evidence from the model's own web search for claims and plots the graph, Wikidata and Wikipedia cannot settle
+# (engine/websearch.py). The cited pages are re-fetched here and only verbatim quotes count. About 10-17 s and
+# ~10k tokens per question that needs it, plus the search fee ($2.50 per 1,000 searches). 0 turns it off.
+WEB_SEARCH = _flag("WEB_SEARCH", True)
+WEB_MAX_PAGES = _int("WEB_MAX_PAGES", 5)
+WEB_PAGE_TIMEOUT = _num("WEB_PAGE_TIMEOUT", 8)
+# When neither the graph nor Wikipedia has a work's plot, the model may say what it remembers of it, clearly labelled
+# unverified (low confidence, never cached). 0: such questions are declined instead.
+PLOT_MEMORY_FALLBACK = _flag("PLOT_MEMORY_FALLBACK", True)
+# Muse Spark is a reasoning model: by default it thinks at high effort, ~30 s for a small question. "low" or "minimal"
+# cuts that to a few seconds (measured: 31 s -> 5 s / 3 s on one test call). Sent as `reasoning_effort` on every
+# call when set; leave empty for models or providers that do not accept it.
+META_REASONING_EFFORT = _env("META_REASONING_EFFORT")
+LLM_TIMEOUT = _num("LLM_TIMEOUT", 90)   # a long prompt at high reasoning effort took 37 s, so 30 s timed out
 LLM_RETRIES = _int("LLM_RETRIES", 3)
 LLM_BREAKER_FAILURES = _int("LLM_BREAKER_FAILURES", 5)        # consecutive failures that open the breaker
 LLM_BREAKER_COOLDOWN = _num("LLM_BREAKER_COOLDOWN", 60)
@@ -106,7 +122,10 @@ USER_SIGNAL_WEIGHT = _num("USER_SIGNAL_WEIGHT", 1.0)
 # Per-question budget
 MAX_LLM_CALLS = _int("MAX_LLM_CALLS", 40)
 MAX_GRAPH_CALLS = _int("MAX_GRAPH_CALLS", 400)
-MAX_TOKENS = _int("MAX_TOKENS", 60000)
+# One web search alone can cost 13-25k tokens (it reads pages), and a question with several claims makes several checks, so the
+# old 60,000 stopped a normal question (a false premise about Einstein used 76k). 150,000 is still about $0.20 at the
+# listed price; lower it to cap cost harder. The call limit above is unchanged.
+MAX_TOKENS = _int("MAX_TOKENS", 150000)
 CHECK_WORKERS = _int("CHECK_WORKERS", 6)   # model checks run at the same time (engine/parallel.py); 1 = one by one
 
 # Global breaker: switch to verified-only mode when recent turns look unhealthy

@@ -36,10 +36,11 @@ import difflib
 import re
 import time
 
-from .. import config, llm, safety, state_cache
+from .. import config, llm, meter, safety, state_cache
 from ..db import connect
 from ..graph_common import EXCLUSIVE_RELATIONS
-from . import compression, decompose, entity_types, guardrails, parallel, temporal, wikidata
+from . import (compression, decompose, entity_types, guardrails, parallel, plots, temporal, websearch, wikidata,
+               wikipedia)
 from .entities import normalize
 from .router import caught
 from .trace import Trace
@@ -158,7 +159,7 @@ def still_holds(store, claims: list[dict]) -> str | None:
         if c.get("source") in ("graph", "graph-corrected"):
             if store.validate(c["subject"], c["relation"], c["object"])["verdict"] != "supported":
                 return f"graph no longer supports {c['subject']} {c['relation']} {c['object']}"
-        elif c.get("source") in ("model", "cache", "wikidata", "wikidata-corrected") \
+        elif c.get("source") in ("model", "cache", "wikidata", "wikidata-corrected", "web") \
                 and state_cache.get(claim_key(c)) is None:
             return f"verification of {c['subject']} {c['relation']} {c['object']} expired"
     return None
@@ -333,6 +334,10 @@ def verify_node(store, c: dict, trace: Trace, label: str, verified_only: bool = 
         yield trace.settle(ev, "fail", f"Outside evidence contradicts it: {evidence['reason']}. Dropped.")
         return {**c, "status": "rejected", "source": "wikidata", "reason": evidence["reason"], "qid": evidence["qid"]}
 
+    web = yield from _web_evidence(c, ev, trace, run)
+    if web:
+        return web
+
     m = _model_check(c, run)
     judge = f"judge {llm.judge_model()}, " + ("a different model from the drafter" if llm.judge_configured()
                                                else "the same model that drafted it")
@@ -361,13 +366,43 @@ def verify_node(store, c: dict, trace: Trace, label: str, verified_only: bool = 
     return {**c, "status": "unverified", "source": "model", "reason": "checks disagree"}
 
 
+def _web_evidence(c: dict, ev: dict, trace: Trace, run: tuple):
+    """Generator: check the claim against sources found on the web (websearch.py). Returns the accepted or rejected
+    node, or None when the web does not settle it (then the model's own checks decide)."""
+    m = meter.current() or {}
+    question = m.get("web_question")
+    if not (websearch.enabled() and question):
+        return None
+    if "web" not in m:
+        yield trace.settle(ev, "running", "Not in the graph or Wikidata. Searching the web for sources; only quotes found "
+                                          "word for word on a page fetched here count as evidence...")
+    pool = websearch.pool(question)
+    if not pool or not pool["quotes"]:
+        return None
+    r = websearch.check_claim(c, pool)
+    if r["verdict"] not in ("supported", "contradicted") or r["confidence"] < 0.7:
+        return None
+    for f in run[:2]:   # the model's judge and probe are not needed
+        f.cancel()
+    pages = ", ".join(p["url"] for p in r["pages"])
+    if r["verdict"] == "contradicted":
+        yield trace.settle(ev, "fail", f"Web sources contradict it ({r['confidence']:.2f}): {pages}. Dropped.")
+        return {**c, "status": "rejected", "source": "web", "reason": f"contradicted by quotes from {pages}", "pages": r["pages"]}
+    state_cache.put(claim_key(c), {"status": "accepted", "checked_at": time.time()},
+                    ttl=config.CLAIM_TTL_HOURS * 3600, triples=[triple(c)])
+    _queue_for_review(c, f"confirmed by web sources: {pages}")
+    yield trace.settle(ev, "ok", f"Not in the graph; quotes found word for word on {len(r['pages'])} page(s) support it "
+                                 f"({r['confidence']:.2f}): {pages}. Accepted and queued for graph review.")
+    return {**c, "status": "accepted", "source": "web", "pages": r["pages"], "reason": f"quoted word for word by {pages}"}
+
+
 def _caught_by_checks(checked: list[dict]) -> list[dict]:
     out = []
     for c in checked:
         if c["source"] in ("graph-corrected", "wikidata-corrected"):
             out.append(caught("factual.entity_error", "factual", "corrected",
                               f"{c['subject']} {c['relation']} {c['original_object']} -> {c['object']} ({c['reason']})"))
-        elif c["status"] == "rejected" and c["source"] in ("graph", "model", "wikidata"):
+        elif c["status"] == "rejected" and c["source"] in ("graph", "model", "wikidata", "web"):
             out.append(caught("factual.entity_error", "factual", "dropped", f"{_fmt(c)}: {c['reason']}"))
         elif c["status"] == "rejected" and c["source"] == "types":
             out.append(caught("factual.relation_error", "factual", "dropped", f"{_fmt(c)}: {c['reason']}"))
@@ -378,6 +413,8 @@ def walk(store, question: str, entities: list[str], trace: Trace, prior: dict | 
          earlier: list[dict] | None = None, verified_only: bool = False, time_sensitive: bool = False):
     """Generator: draft the claim path and verify it node by node. Returns (checked, found)."""
     earlier = earlier or []
+    if meter.current() is not None:
+        meter.current()["web_question"] = question   # what the web search is asked, if a claim needs it (websearch.pool)
     ev = trace.start("graph", "Looking up known facts in the knowledge graph",
                      f"entities: {', '.join(entities) or '(none detected)'}")
     yield ev
@@ -418,11 +455,40 @@ def walk(store, question: str, entities: list[str], trace: Trace, prior: dict | 
         parts = yield from decompose.plan(store, question, entities, trace)
         if parts:
             answered, open_parts = yield from decompose.fill(store, parts, trace)
+    notes: dict[int, str] = {}
+    plots_open = [k for k in open_parts if _is_plot_part(parts[k])]
+    if plots_open:
+        # The graph holds no events for this work. The model must not draft a plot from memory: its event labels
+        # are made up on the spot, so nothing independent can check them. Read the plot from Wikipedia instead and
+        # check the events against it; with no usable article the part stays unanswered, with the reason.
+        for k in plots_open:
+            if verified_only:
+                notes[k] = "verified-only mode accepts graph facts only"
+            else:
+                if wikipedia.enabled():
+                    nodes, why = yield from wikipedia.plot_nodes(parts[k], k, trace)
+                else:
+                    nodes, why = [], "the Wikipedia lookup is turned off"
+                if not nodes and websearch.enabled():   # no article: look on the web, quotes confirmed on the pages
+                    nodes, why_web = yield from _web_plot(parts[k], k, question, trace)
+                    why = f"{why}; {why_web}"
+                if nodes:
+                    answered += nodes
+                elif not wikipedia.enabled() and not websearch.enabled():
+                    notes[k] = "the Wikipedia lookup is turned off"
+                else:
+                    notes[k] = why
+        open_parts = [k for k in open_parts if k not in plots_open]
+        if notes:
+            yield trace.note("graph", "No plot to answer from",
+                             "; ".join(f"“{parts[k]['object']}”: {why}" for k, why in notes.items())
+                             + ". The model does not write a plot from memory.", "warn")
     if parts and not open_parts:
-        yield trace.note("graph", "Every part answered from the graph",
-                         f"{len(answered)} stored fact(s) answer all {len(parts)} part(s) - nothing was left to the model, "
-                         "so there is no draft to check.", "ok")
-        return (yield from _finish(store, parts, answered, [], [], time_sensitive, trace))
+        if not notes and all(n["source"] != "wikipedia" for n in answered):
+            yield trace.note("graph", "Every part answered from the graph",
+                             f"{len(answered)} stored fact(s) answer all {len(parts)} part(s) - nothing was left to the "
+                             "model, so there is no draft to check.", "ok")
+        return (yield from _finish(store, parts, answered, [], [], time_sensitive, trace, notes))
     focus = decompose.focus_text(parts, open_parts, answered) if parts else None
 
     all_relations = store.relation_names()
@@ -450,11 +516,46 @@ def walk(store, question: str, entities: list[str], trace: Trace, prior: dict | 
                          "names were shown; every claim that relies on the cut ones was verified against the full graph.",
                          "ok")
 
-    return (yield from _finish(store, parts, answered, checked, found, time_sensitive, trace))
+    return (yield from _finish(store, parts, answered, checked, found, time_sensitive, trace, notes))
+
+
+def _web_plot(part: dict, k: int, question: str, trace: Trace):
+    """Generator: answer a plot part from the web pool (websearch.py): the events come from quotes found word for word
+    on pages fetched here, through the same event checks as a Wikipedia plot. Returns (nodes, reason)."""
+    work = part["object"]
+    ev = trace.start("factual", f"Searching the web for the plot of “{work}”",
+                     "no Wikipedia plot; only quotes found word for word on a fetched page count")
+    yield ev
+    pool = websearch.pool(question)
+    if not pool:
+        reason = "the web search found nothing usable"
+        yield trace.settle(ev, "warn", reason)
+        return [], reason
+    if len(pool["text"]) < 200:
+        reason = f"no passage could be confirmed word for word on a page (read {pool['read']} of {len(pool['sources'])} pages)"
+        yield trace.settle(ev, "warn", reason)
+        return [], reason
+    pages = websearch.cited(pool)
+    nodes, n_ok, n_all = wikipedia.events_to_nodes(work, pool["text"], k, "web",
+                                                   f"quotes found word for word on {len(pages)} page(s)",
+                                                   pages=pages, title=pages[0]["title"], url=pages[0]["url"])
+    if not nodes:
+        reason = f"the quotes could not be turned into a checked sequence of events ({n_ok} of {n_all} held up)"
+        yield trace.settle(ev, "warn", reason)
+        return [], reason
+    yield trace.settle(ev, "ok", f"{n_ok} of {n_all} events passed the name check and an independent check against quotes "
+                                 f"found word for word on {len(pages)} page(s): " + ", ".join(p["url"] for p in pages)
+                                 + ". Medium confidence: the model's reading of web pages, not a stored fact.")
+    return nodes, None
+
+
+def _is_plot_part(p: dict) -> bool:
+    """(?, event_in, <work>): what happens in a work."""
+    return p["relation"] == plots.EVENT_IN and p["subject"] == decompose.UNKNOWN and not p["object"].startswith("#")
 
 
 def _finish(store, parts: list[dict], answered: list[dict], drafted: list[dict], found: list[dict],
-            time_sensitive: bool, trace: Trace):
+            time_sensitive: bool, trace: Trace, notes: dict[int, str] | None = None):
     """Generator: merge graph answers with the verified draft, review them for currency, then report every part
     left without a verified answer. Returns (checked, found)."""
     merged, seen = list(answered), {triple(a) for a in answered}
@@ -468,6 +569,9 @@ def _finish(store, parts: list[dict], answered: list[dict], drafted: list[dict],
     found = found + stale
     if parts:
         missing_parts = decompose.gaps(parts, checked)
+        for g in missing_parts:   # a plot nobody could verify says why, so the answer can tell the user what to do
+            if g["part"] in (notes or {}):
+                g.update(reason=notes[g["part"]], plot=parts[g["part"]]["object"])
         if missing_parts:
             yield trace.note("graph", "Coverage check: some parts have no verified answer",
                              f"{len(parts) - len(missing_parts)} of {len(parts)} part(s) answered; not answered: "
@@ -498,7 +602,9 @@ def _draft_and_check(store, question: str, shown: list[dict], relations: list[st
     # Claims that depend on no other node need their model check whatever the others turn out to be,
     # so those checks start together now; each is still awaited, and accepted, in order below.
     started = {i: start_model_check(c) for i, c in enumerate(claims)
-               if parallel.enabled() and not verified_only and not c["depends_on"] and triple(c) not in by_triple
+               # with web search on, the pool may settle a claim first, so its model checks are not started early
+               if parallel.enabled() and not verified_only and not websearch.enabled() and not c["depends_on"]
+               and triple(c) not in by_triple
                and _needs_model_check(store, c)}
     if len(started) > 1:
         yield trace.note("factual", "Checking independent nodes in parallel",
@@ -601,6 +707,14 @@ def answer(store, question: str, entities: list[str], trace: Trace, prior: dict 
     ended = [c for c in checked if c.get("ended")]
     missing = [c for c in checked if c["status"] != "accepted" and not c.get("ended")]
 
+    # A plot nothing could verify (no stored events, no usable Wikipedia article): as a last resort the model may tell
+    # what it remembers of the work - labelled as unverified, never cached, never treated as a verified fact.
+    recalled: dict[str, tuple[str, str]] = {}   # work -> (summary, "web" | "memory")
+    if config.PLOT_MEMORY_FALLBACK and not verified_only:
+        for c in [c for c in missing if c.get("plot")]:
+            got = yield from _recall_plot(c["plot"], question, c["reason"], trace)
+            if got:
+                recalled[c["plot"]] = got
     ev = trace.start("compose", "Writing the answer from verified nodes only",
                      f"{len(accepted)} verified, {len(missing)} left out")
     yield ev
@@ -620,8 +734,29 @@ def answer(store, question: str, entities: list[str], trace: Trace, prior: dict 
         text = yield from guardrails.guard_factual(question, text, accepted, missing + ended, prompt, COMPOSE_STRICT,
                                                    trace, found)
     else:
-        text = "I couldn't verify any facts to answer this, so I'd rather not guess."
-        yield trace.settle(ev, "warn", "Nothing verified - declining to answer")
+        text = _decline_text([c for c in missing if c.get("plot") not in recalled]) if \
+            any(c.get("plot") not in recalled for c in missing) else ""
+        yield trace.settle(ev, "warn", "Nothing verified" + (" - answering from what was found, labelled unverified"
+                                                             if recalled else " - declining to answer"))
+    if recalled:
+        why = {c["plot"]: c["reason"] for c in missing if c.get("plot")}
+        text = (text + "\n\n" if text else "") + "\n\n".join(
+            (f"Not verified. A web search found pages about “{w}”, but their text could not be confirmed word for word "
+             f"here, so this is the model's reading of them and may contain mistakes:\n\n{summary}"
+             if origin == "web" else
+             f"Not verified. I couldn't find a source for “{w}” ({why[w]}), so this comes from the model's memory and "
+             f"may contain mistakes:\n\n{summary}") for w, (summary, origin) in recalled.items())
+    # a plot read from an article or from web quotes: say where, with links, after the faithfulness guard
+    wiki = {c["url"]: c["title"] for c in accepted if c.get("source") == "wikipedia"}
+    web = {pg["url"]: pg["title"] for c in accepted if c.get("source") == "web" and c["relation"] == "event_in"
+           for pg in c.get("pages", [])}
+    if wiki:
+        text += "\n\nSource: " + "; ".join(f"Wikipedia, “{t}” ({u})" for u, t in wiki.items()) \
+            + " - summarised by the model and checked against the article text."
+    if web:
+        text += "\n\nSources: " + "; ".join(f"{t} ({u})" for u, t in web.items()) \
+            + " - found by web search; the quoted passages were confirmed word for word on these pages."
+    sources = {**wiki, **web}
 
     graph_share = sum(c["source"] in EVIDENCE_SOURCES for c in accepted) / max(len(accepted), 1)
     confidence = "high" if accepted and not missing and graph_share >= 0.5 else "medium" if accepted else "low"
@@ -634,6 +769,63 @@ def answer(store, question: str, entities: list[str], trace: Trace, prior: dict 
         "path": checked,
         "caught": found,
         "withheld": sum(c["status"] == "unverified" for c in checked),
-        "cacheable": bool(accepted) and not missing and not time_sensitive and not safety.tainted({"path": accepted}),
-        "stopped": None if accepted else {"reason": "nothing_verified", "detail": "no claim passed verification"},
+        # an article summary is not a graph fact: it is not cached, and states.state_of leaves it out
+        "cacheable": bool(accepted) and not missing and not time_sensitive and not safety.tainted({"path": accepted})
+        and not sources and not recalled,
+        "memory_summary": bool(recalled),
+        "stopped": None if accepted or recalled else
+        ({"reason": "plot_unavailable", "detail": "; ".join(f"{c['plot']}: {c['reason']}" for c in missing if c.get("plot"))}
+         if missing and all(c.get("plot") for c in missing) else
+         {"reason": "nothing_verified", "detail": "no claim passed verification"}),
     }
+
+
+MEMORY_PLOT_SYSTEM = """Summarise the plot of the work from your own knowledge, as a short paragraph of at most 8 sentences.
+Do this only if you actually recognise this specific work and know its story. If you do not recognise it, or you are
+unsure which work is meant, set recognised to false and leave the summary empty. Never invent a plot.
+Return only JSON: {"recognised": true, "confidence": 0.0, "summary": "..."}"""
+MEMORY_MIN_CONFIDENCE = 0.6
+
+
+def _recall_plot(work: str, question: str, why: str, trace: Trace):
+    """Generator: (summary, origin) for a plot nothing could verify, or None. origin "web": the web search found pages but
+    their text could not be confirmed here, so the search's own answer is offered; "memory": what the model remembers of
+    the work (it must recognise it). The caller labels either as unverified."""
+    found = (meter.current() or {}).get("web")
+    if found and found["found"] and len(found["answer"]) >= 150:   # a "NOT FOUND" answer is not offered as a summary
+        ev = trace.start("factual", f"No passage about “{work}” could be confirmed word for word", f"{why}.")
+        yield ev
+        yield trace.settle(ev, "warn", f"A web search did find pages ({', '.join(s['url'] for s in found['sources'][:3])}), "
+                                       "but their text could not be confirmed here. Its answer is offered, labelled unverified.")
+        return found["answer"], "web"
+    ev = trace.start("factual", f"No source could verify the plot of “{work}”", f"{why}. Asking what the model remembers.")
+    yield ev
+    try:
+        d = llm.chat_json(MEMORY_PLOT_SYSTEM, f"Work: {work}\n\nThe user asked: {question}")
+    except llm.LLMBadOutput:
+        d = {}
+    d = d if isinstance(d, dict) else {}
+    try:
+        conf = float(d.get("confidence", 0))
+    except (TypeError, ValueError):
+        conf = 0.0
+    summary = " ".join(str(d.get("summary") or "").split())[:1500]
+    if d.get("recognised") is True and conf >= MEMORY_MIN_CONFIDENCE and summary:
+        summary = " ".join(s for s in re.split(r"(?<=[.!?])\s+", summary) if not safety.injection_signals(s))
+        yield trace.settle(ev, "warn", f"The model recognises it (confidence {conf:.2f}). The summary is from its memory, "
+                                       "not checked against any source, so the answer is labelled unverified.")
+        return summary, "memory"
+    yield trace.settle(ev, "warn", "The model does not recognise the work well enough to summarise it, so nothing is "
+                                   "offered.")
+    return None
+
+
+def _decline_text(missing: list[dict]) -> str:
+    """Why nothing could be verified. For a plot, say what is missing and how to add it."""
+    plots_ = [c for c in missing if c.get("plot")]
+    if not plots_ or len(plots_) < len(missing):
+        return "I couldn't verify any facts to answer this, so I'd rather not guess."
+    lines = [f"I don't have the plot of “{c['plot']}” stored, and I couldn't get a reliable outside summary: "
+             f"{c['reason']}." for c in plots_]
+    return (" ".join(lines) + " I'd rather not make one up. To answer this, add the plot to the graph (POST /plots, or "
+            "ingest a summary you trust at POST /ingest), then ask again.")

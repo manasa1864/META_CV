@@ -39,7 +39,8 @@ def evaluate(cases: list[dict], fallback_only: bool = False) -> dict:
     for c in cases:
         hist = _history_text(c)
         p = router.fallback_profile(c["question"], bool(hist)) if fallback_only else router.classify(c["question"], hist)
-        rows.append({"id": c["id"], "category": c["category"], "label": c["type"], "pred": p["type"], "source": p["source"],
+        rows.append({"id": c["id"], "question": c["question"], "category": c["category"], "label": c["type"],
+                     "pred": p["type"], "source": p["source"], "pred_needs": p["needs"], "label_needs": c["needs"],
                      "needs_ok": {k: p["needs"].get(k) == v for k, v in c["needs"].items()},
                      "false_premise": (bool(c.get("false_premise")), p["false_premise_suspected"]),
                      "time_sensitive": (bool(c.get("time_sensitive")), p["time_sensitive"])})
@@ -76,6 +77,7 @@ def evaluate(cases: list[dict], fallback_only: bool = False) -> dict:
         "false_premise": detect("false_premise"), "time_sensitive": detect("time_sensitive"),
         "by_source": by_source, "by_category": by_category,
         "errors": [r["id"] + f": {r['label']} -> {r['pred']}" for r in rows if r["label"] != r["pred"]],
+        "rows": rows,
         "labels_note": "labels written by the author; review them before quoting these numbers",
         "created_at": time.time(),
     }

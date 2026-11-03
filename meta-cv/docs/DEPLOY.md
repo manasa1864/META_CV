@@ -28,8 +28,13 @@ container sets `META_NO_HOME_ENV=1` so nothing reads `~/.meta_cv/.env`.
 | `PORT` | the port the host expects (Hugging Face Spaces: `7860`) |
 | `META_JUDGE_MODEL` | optional: a different model for the independent checks, so the drafter does not check itself (`META_JUDGE_BASE_URL` / `META_JUDGE_API_KEY` if it is on another API) |
 | `WIKIDATA_LOOKUP` | optional: `0` turns off the Wikidata evidence lookup (on by default; needs outbound HTTPS to wikidata.org) |
+| `WIKIPEDIA_LOOKUP` | optional: `0` turns off reading plots from Wikipedia for works the graph has no events for (on by default; needs outbound HTTPS to en.wikipedia.org) |
+| `MAX_TOKENS`, `MAX_LLM_CALLS` | per-question budget (150000 tokens, 40 calls). A question that exceeds it stops with a clear message instead of guessing. A web search alone can use 13-25k tokens |
+| `WEB_SEARCH` | optional: `0` turns off the model API's web search as evidence (on by default; ~10-17 s and ~10k tokens per question that needs it, plus the search fee; the app also fetches the cited pages, so it needs outbound HTTPS). `WEB_MAX_PAGES` (5), `WEB_PAGE_TIMEOUT` (8) |
+| `PLOT_MEMORY_FALLBACK` | optional: `0` stops the model from telling what it remembers of a work's plot (labelled unverified, low confidence) when no source has it; such questions are declined instead |
+| `META_REASONING_EFFORT` | `low` or `minimal` for Muse Spark (default model effort is high: ~30 s per call). Empty for providers that reject the parameter |
 | `CHECK_WORKERS` | optional: model checks run at the same time (default `6`); lower it if the model API rate-limits, `1` checks one by one |
-| optional | `RATE_LIMIT_PER_MIN` (12 in judge mode, 30 otherwise; `0` = off), `MAX_QUESTION_CHARS` (2000), `DAILY_TOKEN_BUDGET` (2000000), `MAX_CONCURRENT` (8), `LLM_TIMEOUT` (30) |
+| optional | `RATE_LIMIT_PER_MIN` (12 in judge mode, 30 otherwise; `0` = off), `MAX_QUESTION_CHARS` (2000), `DAILY_TOKEN_BUDGET` (2000000), `MAX_CONCURRENT` (8), `LLM_TIMEOUT` (90) |
 | `INVARIANCE_CHECK`, `ADVERSARIAL_ROUTING` | `1` (default) / `0`: re-answer flagged questions without their instructions; learned normal-vs-verified-only policy for flagged questions |
 | `SOURCE_TRUST_MIN_FACTS`, `SOURCE_TRUST_FLOOR` | `3`, `0.5`: an untrusted source with at least this many checked facts and trust below the floor has its new facts sent to review |
 | `TURNS_RETENTION_DAYS` | chat turns are kept this long, with private data already redacted (default `90`; `0` keeps them). Benchmark turns are kept |
