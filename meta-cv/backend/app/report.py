@@ -1401,7 +1401,7 @@ def write_index() -> None:
 def render(sections: list[tuple[str, Section]], started: float, done: bool, version: int | None = None, meta: dict | None = None,
            index_link: str = "INDEX.md") -> str:
     by = dict(sections)
-    out = ["# META CV: evaluation of the novel approaches and AI safety" + (f" (version {version})" if version else ""), "",
+    out = ["# Prism AI: evaluation of the novel approaches and AI safety" + (f" (version {version})" if version else ""), "",
            f"Generated {time.strftime('%Y-%m-%d %H:%M:%S')} by `python -m app.report` in {time.time() - started:.0f}s" +
            ("" if done else " - **unfinished**"), ""]
     if version and meta:

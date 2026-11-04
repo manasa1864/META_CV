@@ -1,4 +1,4 @@
-# META CV
+# Prism AI
 
 An adaptive chatbot that tries to prevent hallucinations by design.
 
@@ -551,8 +551,8 @@ proxy uses), built by the multi-stage `Dockerfile`:
 
 ```bash
 cd meta-cv
-docker build -t meta-cv .
-docker run -p 8000:8000 --env-file backend/.env -e JUDGE_MODE=1 -e ADMIN_TOKEN=... meta-cv
+docker build -t prism-ai .
+docker run -p 8000:8000 --env-file backend/.env -e JUDGE_MODE=1 -e ADMIN_TOKEN=... prism-ai
 ```
 
 No host-specific files are in the repo yet. Pick a host from the table below first.

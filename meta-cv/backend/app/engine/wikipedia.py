@@ -24,7 +24,7 @@ from .entities import normalize
 from .trace import Trace
 
 API = "https://en.wikipedia.org/w/api.php"
-USER_AGENT = "META-CV/1.0 (https://github.com/manasa1864/META_CV; plot evidence)"
+USER_AGENT = "PrismAI/1.0 (https://github.com/manasa1864/META_CV; plot evidence)"
 MAX_TEXT = 6000
 MAX_EVENTS = 12
 MIN_EVENTS = 2

@@ -1,4 +1,4 @@
-# META CV: evaluation of the novel approaches and AI safety (version 8)
+# Prism AI: evaluation of the novel approaches and AI safety (version 8)
 
 Generated 2026-11-04 16:32:29 by `python -m app.report` in 4565s
 

@@ -19,7 +19,7 @@ from .. import config
 from .entities import normalize
 
 API = "https://www.wikidata.org/w/api.php"
-USER_AGENT = "META-CV/1.0 (https://github.com/manasa1864/META_CV; hallucination checks)"
+USER_AGENT = "PrismAI/1.0 (https://github.com/manasa1864/META_CV; hallucination checks)"
 
 # relation -> (properties, value kind, exclusive). Exclusive: one true value in reality, so a mismatch is a
 # contradiction. ceo_of is read from the organization's side (P169 "chief executive officer").

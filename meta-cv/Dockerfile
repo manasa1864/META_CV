@@ -1,6 +1,6 @@
 # One deployable: the built frontend at /, the API under /api.
-#   docker build -t meta-cv .
-#   docker run -p 8000:8000 --env-file backend/.env -e JUDGE_MODE=1 meta-cv
+#   docker build -t prism-ai .
+#   docker run -p 8000:8000 --env-file backend/.env -e JUDGE_MODE=1 prism-ai
 # Secrets come from the host's environment variables only; nothing reads ~/.meta_cv/.env here.
 
 FROM node:22-slim AS web

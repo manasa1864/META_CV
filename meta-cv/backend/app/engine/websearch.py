@@ -33,7 +33,7 @@ from .entities import normalize
 
 MAX_BYTES = 1_500_000
 MAX_REDIRECTS = 3
-USER_AGENT = "META-CV/1.0 (https://github.com/manasa1864/META_CV; evidence check)"
+USER_AGENT = "PrismAI/1.0 (https://github.com/manasa1864/META_CV; evidence check)"
 MIN_QUOTE = 25
 
 RESEARCH_SYSTEM = """Find sources with web search and answer the question from them.
