@@ -12,10 +12,16 @@ Across solutions: independent solutions must agree on the final answer
 (self-consistency); disagreement draws more solutions, up to the mode's limit.
 
 The three modes trade cost for caution. Edit MODES to retune them.
+
+"auto" (the default) climbs them as a ladder: it starts relaxed (aggressive: one solution, machine checks only,
+the fewest tokens) and moves to balanced, then conservative, only when the problem or the checks give a reason:
+a multi-step solution, a backtrack, a failed check, a fact it builds on, or independent solutions that disagree.
+Easy problems stay cheap; hard ones get the scrutiny. Each escalation, its reason and the tokens spent so far
+are shown in the trace. A problem the router already rates as a high logic risk starts at balanced.
 """
 from collections import Counter
 
-from .. import llm
+from .. import config, llm, meter
 from . import compression, guardrails, mathcheck
 from .router import caught
 from .trace import Trace
@@ -30,10 +36,13 @@ MODES = {
     "aggressive": {"samples": 1, "max_samples": 1, "logic_check": False, "max_backtracks": 1, "agreement": "single"},
 }
 STRICTNESS = {"aggressive": 0, "balanced": 1, "conservative": 2}
+LADDER = ("aggressive", "balanced", "conservative")   # mode "auto" climbs it (see module docstring)
 
 SOLVE_SYSTEM = """Solve the problem step by step. Each step states one thing.
 When a step computes a number, put the pure arithmetic in "expression" (digits, + - * / ** % and parentheses only;
 no units, words or variables) and the value you get in "result". Otherwise leave both empty.
+Write each calculation as the problem states it (17*23, not 17*20 + 17*3): the expression is evaluated by machine, so
+mental-arithmetic splits only add numbers the problem does not contain.
 If VERIFIED PREMISES are given, take every real-world fact from them only; if a fact you need is not there,
 set final_answer to "insufficient verified facts".
 Return only JSON: {"steps": [{"text": "...", "expression": "", "result": ""}], "final_answer": "..."}"""
@@ -181,6 +190,38 @@ def _agreed(cfg: dict, keys: list[str], total: int) -> tuple[str | None, int]:
     return (top if ok else None), n
 
 
+def _tokens() -> int:
+    m = meter.current() or {}
+    return m.get("prompt", 0) + m.get("completion", 0)
+
+
+def _escalation_reason(solutions: list[dict], winner: str | None, premises: list[dict] | None) -> str | None:
+    """Why the current level is not enough (None: accept it). Only signals the checks themselves produce."""
+    if winner is None:
+        return "the solutions so far do not agree" if len(solutions) > 1 else "the solution could not be verified"
+    if len(solutions) > 1:
+        return None   # independent solutions agreed under this level's rule
+    s = solutions[0]
+    if s["fixes"]:
+        return f"the solution needed {len(s['fixes'])} backtrack(s) to pass its checks"
+    if INSUFFICIENT in s["final_answer"].lower():
+        return "the solution says it lacks a verified fact"
+    if premises:
+        return "the calculation builds on facts checked elsewhere"
+    if len(s["steps"]) > config.SIMPLE_SOLUTION_STEPS:
+        return (f"the solution has {len(s['steps'])} steps (more than {config.SIMPLE_SOLUTION_STEPS}), "
+                "so its logic gets an independent check")
+    return None
+
+
+def _describe_accept(solutions: list[dict]) -> str:
+    if len(solutions) == 1:
+        s = solutions[0]
+        return (f"One solution of {len(s['steps'])} step(s): every arithmetic step was machine-checked and every number "
+                "traced to the question, with no backtrack, so no stricter check was needed.")
+    return f"{len(solutions)} independent solutions agreed."
+
+
 def _same_question(a: str, b: str) -> bool:
     return " ".join(a.lower().split()).rstrip("?. ") == " ".join(b.lower().split()).rstrip("?. ")
 
@@ -198,16 +239,25 @@ def answer(question: str, mode: str, trace: Trace, prior: dict | None = None, ea
     independent cross-check solutions stay independent. earlier: answers this conversation already gave.
     premises: verified facts (from the factual tier) a mixed question's calculation must build on.
     """
-    cfg = MODES[mode]
+    auto = mode == "auto"
+    if auto:
+        risk = (meter.current() or {}).get("logic_risk", 0)
+        start = "balanced" if risk >= config.LOGIC_RISK_STRICT_START else "aggressive"
+        ladder = list(LADDER[LADDER.index(start):])
+    else:
+        ladder = [mode]
+    level = ladder[0]
+    cfg = MODES[level]
     problem = question + (premises_txt(premises) if premises else "")
     # Numbers may also come from answers this conversation already verified ("double that"), never from a
     # similar problem's steps: those are a template, and their numbers belong to another question.
     sources = problem + "".join(f"\n{e['final_answer']}" for e in earlier or [])
-    yield trace.note("reasoning", f"Mode: {mode}",
+    yield trace.note("reasoning", f"Mode: auto, starting {level}" if auto else f"Mode: {mode}",
                      f"{cfg['samples']} independent solution(s) (up to {cfg['max_samples']}), agreement: "
                      f"{cfg['agreement']}, logic check: {'on' if cfg['logic_check'] else 'off'}, "
                      f"max backtracks: {cfg['max_backtracks']}"
-                     + (f", built on {len(premises)} verified premise(s)" if premises else ""))
+                     + (f", built on {len(premises)} verified premise(s)" if premises else "")
+                     + (". Stricter levels are added only if the problem or the checks call for it." if auto else ""))
     solutions: list[dict] = []
     winner = None
     template, failed_template = None, None
@@ -230,25 +280,47 @@ def answer(question: str, mode: str, trace: Trace, prior: dict | None = None, ea
         yield trace.note("states", "Reusing verified reasoning",
                          f"A similar problem (“{prior['question']}”, similarity {prior['similarity']}) was solved and "
                          f"verified before; solution 1 adapts its {len(prior['state']['steps'])} checked steps.", "ok")
-    while template is None and len(solutions) < cfg["max_samples"]:
-        n = len(solutions)
-        sol = yield from solve_once(problem, cfg, trace, f"Solution {n + 1}", 0 if n == 0 else 0.7,
-                                    prior if n == 0 else None, sources)
-        solutions.append(sol)
-        if len(solutions) < cfg["samples"]:
-            continue
-        keys = [answer_key(s["final_answer"]) for s in solutions if s["verified"]]
-        winner, votes = _agreed(cfg, keys, len(solutions))
-        ev = trace.start("reasoning", "Cross-checking independent solutions")
-        yield ev
-        answers = ", ".join(f"#{i + 1}: {s['final_answer'] or '-'}{'' if s['verified'] else ' (unverified)'}"
-                            for i, s in enumerate(solutions))
-        if winner is not None:
-            yield trace.settle(ev, "ok", f"Consistent ({votes}/{len(solutions)} agree). {answers}")
+    escalations: list[dict] = []
+    why = ""
+    for i, level in enumerate(ladder):
+        cfg = MODES[level]
+        if i:
+            spent = _tokens()
+            escalations.append({"to": level, "reason": why, "tokens_before": spent})
+            yield trace.note("reasoning", f"Escalating to {level}",
+                             f"{why}. Now: {cfg['samples']} independent solution(s) in all (up to {cfg['max_samples']}), "
+                             f"agreement: {cfg['agreement']}, logic check: {'on' if cfg['logic_check'] else 'off'}. "
+                             f"Tokens so far: {spent:,}.", "warn")
+        if template is None:
+            winner = None
+        while template is None and len(solutions) < cfg["max_samples"]:
+            n = len(solutions)
+            sol = yield from solve_once(problem, cfg, trace, f"Solution {n + 1}", 0 if n == 0 else 0.7,
+                                        prior if n == 0 else None, sources)
+            solutions.append(sol)
+            if len(solutions) < cfg["samples"]:
+                continue
+            keys = [answer_key(s["final_answer"]) for s in solutions if s["verified"]]
+            winner, votes = _agreed(cfg, keys, len(solutions))
+            if len(solutions) == 1 and cfg["agreement"] == "single":
+                break   # one solution: nothing to cross-check
+            ev = trace.start("reasoning", "Cross-checking independent solutions")
+            yield ev
+            answers = ", ".join(f"#{k + 1}: {s['final_answer'] or '-'}{'' if s['verified'] else ' (unverified)'}"
+                                for k, s in enumerate(solutions))
+            if winner is not None:
+                yield trace.settle(ev, "ok", f"Consistent ({votes}/{len(solutions)} agree). {answers}")
+                break
+            more = len(solutions) < cfg["max_samples"]
+            yield trace.settle(ev, "warn" if more or i < len(ladder) - 1 else "fail",
+                               f"Not consistent yet. {answers}" + (" Drawing another independent solution." if more else ""))
+        if template is not None or i == len(ladder) - 1:
             break
-        more = len(solutions) < cfg["max_samples"]
-        yield trace.settle(ev, "warn" if more else "fail",
-                           f"Not consistent yet. {answers}" + (" Drawing another independent solution." if more else ""))
+        why = _escalation_reason(solutions, winner, premises)
+        if not why:
+            yield trace.note("reasoning", f"Accepted at the {level} level",
+                             f"{_describe_accept(solutions)} Tokens used: {_tokens():,}.", "ok")
+            break
 
     verified = [s for s in solutions if s["verified"]]
     if winner is not None:
@@ -315,7 +387,8 @@ def answer(question: str, mode: str, trace: Trace, prior: dict | None = None, ea
         lines += ["", f"_Warning: I could not verify this solution ({best.get('problem', 'checks failed')})._"]
     return {
         "tier": "reasoning",
-        "mode": mode,
+        "mode": level,
+        "escalations": escalations,
         "answer": "\n".join(lines),
         "confidence": confidence,
         "path": best["steps"],

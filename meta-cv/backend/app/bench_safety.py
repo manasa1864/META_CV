@@ -137,6 +137,23 @@ def grade_outcome(problems: list[str], stopped: str | None, confidence: str | No
     return "abstained" if stopped or confidence == "low" else "hallucinated"
 
 
+TRANSIENT = ("graph_unavailable", "llm_unavailable")
+
+
+def run_with_retry(store, question: str, tries: int = 3, **kw) -> tuple[list[dict], int]:
+    """(events, retries). pipeline.run to the end. A failure of the infrastructure (the graph or the model cannot be reached) says
+    nothing about the system, so it is tried again after a pause instead of being recorded as the result."""
+    from .engine import pipeline
+
+    for attempt in range(tries):
+        events = list(pipeline.run(store, question, typing_delay=0, **kw))
+        err = next((e for e in events if e["type"] == "error"), None)
+        if not err or err["code"] not in TRANSIENT or attempt == tries - 1:
+            return events, attempt
+        time.sleep(8)
+    return events, tries - 1
+
+
 def end_to_end(cases: list[dict]) -> dict:
     """Each case on a fresh temporary graph holding one true fact (and the case's poison, written past the gate)."""
     from .engine import pipeline
@@ -150,7 +167,7 @@ def end_to_end(cases: list[dict]) -> dict:
         if c.get("poison"):
             p = c["poison"]
             store.add_fact(p["subject"], p["relation"], p["object"], "poison")   # straight in, as a pre-gate fact would be
-        events = list(pipeline.run(store, c["question"], typing_delay=0, reuse=False, source="bench"))
+        events, retries = run_with_retry(store, c["question"], reuse=False, source="bench")
         error = next((e for e in events if e["type"] == "error"), None)
         answer = "".join(e["delta"] for e in events if e["type"] == "answer")
         final = next((e for e in events if e["type"] == "final"), {})
@@ -172,9 +189,9 @@ def end_to_end(cases: list[dict]) -> dict:
                 conn.execute("UPDATE turns SET outcome=?, signal_quality='ground_truth' WHERE id=?",
                              (grade_outcome(problems, stopped, final.get("confidence")), final["turn_id"]))
         sf = final.get("safety") or {}
-        rows.append({"id": c["id"], "passed": not problems, "problems": problems, "answer": answer[:400],
+        rows.append({"id": c["id"], "tests": c.get("tests", ""), "passed": not problems, "problems": problems, "answer": answer[:400],
                      "question": c["question"], "stopped": stopped, "policy": sf.get("policy"),
-                     "steered": bool(sf.get("steered")), "injection": sf.get("injection", []),
+                     "steered": bool(sf.get("steered")), "injection": sf.get("injection", []), "retries": retries,
                      "ignored_facts": sf.get("ignored_facts", 0), "tier": final.get("tier"),
                      "confidence": final.get("confidence"),
                      "expect": {k: c[k] for k in ("must_contain_any", "must_not_contain", "must_not_leak",
@@ -201,7 +218,7 @@ def ablation(cases: list[dict]) -> dict:
             store = SqliteGraphStore(str(Path(tempfile.mkdtemp()) / "abl.db"))
             store.define_relation("born_in", functional=False)
             store.add_fact("jane austen", "born_in", "steventon", "seed")
-            events = list(pipeline.run(store, c["question"], typing_delay=0, reuse=False, source="bench", flags=flags))
+            events, _ = run_with_retry(store, c["question"], reuse=False, source="bench", flags=flags)
             final = next((e for e in events if e["type"] == "final"), {})
             answer = "".join(e["delta"] for e in events if e["type"] == "answer")
             low = answer.lower()

@@ -1,0 +1,15 @@
+{
+ "version": 8,
+ "date": "2026-11-04 15:16",
+ "commit": "73083b9 (uncommitted changes)",
+ "mode": "full",
+ "only": [
+  "compare"
+ ],
+ "based_on": 7,
+ "label": "Head-to-head: this system vs plain model vs typical RAG",
+ "notes": "New section: 84 questions (10 one-fact, 8 two-hop, 20 calculations from 1 to 5 steps, 8 false premises, 6 invented or future things, 7 attacks, and 7 follow-up conversations of 3-4 turns) sent to this system, a plain model and a typical Wikipedia RAG chatbot on the same model and key, graded the same way. Written before any of the three was run on it; nothing tuned on it. Also new since version 7: reasoning levels are automatic (start relaxed, climb to balanced and conservative only when a check gives a reason), and the solver no longer splits arithmetic into mental-maths pieces. Other sections are kept from version 7.",
+ "sections_run": [
+  "compare"
+ ]
+}

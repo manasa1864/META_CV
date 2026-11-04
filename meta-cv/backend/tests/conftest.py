@@ -7,7 +7,7 @@ from pathlib import Path
 os.environ["GRAPH_BACKEND"] = "sqlite"
 # Tests never reach a real model, whatever backend/.env holds: set but empty, so load_dotenv keeps them empty.
 for _name in ("META_API_KEY", "META_BASE_URL", "META_MODEL", "META_REASONING_EFFORT", "META_JUDGE_MODEL", "META_JUDGE_BASE_URL",
-              "META_JUDGE_API_KEY", "ADMIN_TOKEN"):
+              "META_JUDGE_API_KEY", "ADMIN_TOKEN", "TAVILY_API_KEY"):
     os.environ[_name] = ""
 os.environ["WIKIDATA_LOOKUP"] = "0"  # no network in tests; wikidata tests use a mock transport
 os.environ["WIKIPEDIA_LOOKUP"] = "0"  # likewise; the wikipedia tests switch it on with a mock transport
@@ -33,6 +33,8 @@ STATE_ANSWER = "Answer the question using ONLY the numbered verified facts"
 # Graph-first: by default a question is not split into parts, so tests that do not exercise it see the plain
 # draft-and-verify walk; graph-first tests script the plan explicitly.
 PLAN = "Split the question into the facts it asks for"
+REWRITE = "Rewrite the user's follow-up"   # unscripted: the follow-up is kept as asked
+STRIP = "Delete from the input every part"     # unscripted: nothing is stripped
 
 
 @pytest.fixture(autouse=True)
@@ -53,7 +55,7 @@ class FakeLLM:
     def __init__(self, monkeypatch):
         self.handlers = {}
         self.defaults = {GUARD_EXTRACT: lambda u, t: {"claims": []}, STATE_ANSWER: lambda u, t: {"answerable": False},
-                         PLAN: lambda u, t: {"parts": []}}
+                         PLAN: lambda u, t: {"parts": []}, REWRITE: lambda u, t: {"standalone": ""}, STRIP: lambda u, t: ""}
         self.calls = []
         self.prompts = {}
         from app import llm

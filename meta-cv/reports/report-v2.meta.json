@@ -1,0 +1,21 @@
+{
+ "version": 2,
+ "date": "2026-11-03 09:41",
+ "commit": "73083b9 (uncommitted changes)",
+ "mode": "full",
+ "only": [
+  "e2e",
+  "ablation",
+  "tests",
+  "live"
+ ],
+ "based_on": 1,
+ "label": "After the invariance and policy fixes",
+ "notes": "Re-run of the real attacks, the on/off comparison, the live questions and the tests after three fixes: the plain question is no longer held to the verified-only policy, the sentence splitter handles colons, emails and decimals, and two cases were added (e2e-12 Hamlet; e2e-09 and e2e-12 now in the comparison). Classification and hallucination-type sections are kept from v1.",
+ "sections_run": [
+  "e2e",
+  "ablation",
+  "tests",
+  "live"
+ ]
+}

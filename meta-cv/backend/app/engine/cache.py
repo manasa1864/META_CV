@@ -37,7 +37,7 @@ def lookup(store, question: str, mode: str | None, trace: Trace):
     if hit is None:
         yield trace.settle(ev, "info", "No verified path yet - running the full pipeline.")
         return None
-    if hit["tier"] == "reasoning" and mode and reasoning.STRICTNESS[hit["mode"]] < reasoning.STRICTNESS[mode]:
+    if hit["tier"] == "reasoning" and mode and reasoning.STRICTNESS.get(hit["mode"], 0) < reasoning.STRICTNESS[mode]:
         yield trace.settle(ev, "info", f"Found a path verified in {hit['mode']} mode, but {mode} was asked for - "
                                        "re-verifying.")
         return None

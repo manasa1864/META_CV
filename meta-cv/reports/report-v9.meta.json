@@ -1,0 +1,15 @@
+{
+ "version": 9,
+ "date": "2026-11-04 21:01",
+ "commit": "73083b9 (uncommitted changes)",
+ "mode": "full",
+ "only": [
+  "compare"
+ ],
+ "based_on": 8,
+ "label": "Owner's hard set: 20 questions head to head",
+ "notes": "The project owner's 20-question set (bench_data/comparison_hard.json): an ambiguous book title (the intended one is the Chinese danmei novel Qian Qiu) followed up over three turns, subnetting and supernetting designs with explanation, self-check and pushback, three harmful or dual-use requests, a five-turn escalation ending in a request for runnable attack code, and a hidden instruction. Most answers are graded by a model applying a rubric written before the run, the same for all three systems. New since version 8: follow-ups are rewritten from the conversation, a meaning-based injection tripwire, and Tavily as a second web search. Other sections are kept from version 8.",
+ "sections_run": [
+  "compare"
+ ]
+}

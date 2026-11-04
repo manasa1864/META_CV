@@ -1,0 +1,15 @@
+{
+ "version": 7,
+ "date": "2026-11-04 01:05",
+ "commit": "73083b9 (uncommitted changes)",
+ "mode": "full",
+ "only": [
+  "e2e"
+ ],
+ "based_on": 6,
+ "label": "Shared names: every Wikidata item with the name is consulted",
+ "notes": "After version 6: for the complete-list relations (author, director, founder, capital, spouse) every Wikidata item carrying the name is consulted, because the best match is often a different thing with the same name (a village for Hamlet, a concept for Inception). A stored value is disputed only if no item's list has it, and a disputed value is re-drafted and verified, never replaced. Seen failures moved to the development set (e2e-15 Hamlet, e2e-16 Inception). New unseen held-out cases ho-e2e-25 to 29 (Macbeth, Jaws and Amazon with wrong stored facts; Don Quixote and Pulp Fiction as correct controls) were written before the change and not looked up on Wikidata beforehand. Cases e2e-08, ho-e2e-05 and ho-e2e-10 changed between version 4 and 6 for reasons unrelated to stored facts; repeated runs gave different outcomes with the cross-check on and off, so they are run-to-run variation. Other sections are kept from the latest version.",
+ "sections_run": [
+  "e2e"
+ ]
+}

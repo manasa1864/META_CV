@@ -12,6 +12,10 @@ trusted as it stands. Instead:
   4. plots use the same pool, through the same event checks as Wikipedia (wikipedia.events_to_nodes).
 Pages are fetched only from public addresses (no localhost, private or link-local ranges, also after redirects), with a
 size and time limit. Quotes and answers have instruction-like sentences dropped. Off with WEB_SEARCH=0.
+
+With TAVILY_API_KEY set, Tavily (tavily.py) searches too, at the same time. Its pages join the ones read here; a page the app
+cannot read itself is matched against the text Tavily extracted from it; and sentences of Tavily's own snippets join the
+pool as quotes (marked via "tavily"). It also keeps the pool working when the model's search is unavailable.
 """
 import html
 import ipaddress
@@ -24,6 +28,7 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 
 from .. import config, llm, meter, safety
+from . import parallel, tavily
 from .entities import normalize
 
 MAX_BYTES = 1_500_000
@@ -49,7 +54,7 @@ _QUOTE = re.compile(r"“([^”]{%d,500})”|\"([^\"\n]{%d,500})\"" % (MIN_QUOTE
 
 
 def enabled() -> bool:
-    return config.WEB_SEARCH and llm.configured()
+    return config.WEB_SEARCH and (llm.configured() or tavily.enabled())
 
 
 # ------------------------------------------------------------------------------------- fetching pages
@@ -117,11 +122,20 @@ def _readable(text: str) -> str:
     return text
 
 
-def verified_quotes(answer: str, urls: list[str], titles: dict[str, str]) -> tuple[list[dict], int]:
-    """([{quote, url, title}], pages read): the quotes in the answer that occur word for word on a page fetched here."""
+def _as_text(raw: str) -> str:
+    return " " + normalize(raw) + " "
+
+
+def verified_quotes(answer: str, urls: list[str], titles: dict[str, str],
+                    extracted: dict[str, str] | None = None) -> tuple[list[dict], int]:
+    """([{quote, url, title}], pages read): the quotes in the answer that occur word for word on a page fetched here, or in the
+    text Tavily extracted from that page (extracted: url -> text; it reads pages that build their text with JavaScript)."""
     with ThreadPoolExecutor(max_workers=max(1, len(urls))) as ex:
         pages = dict(zip(urls, ex.map(_page, urls)))
-    read = {u: t for u, t in pages.items() if t}
+    for u, raw in (extracted or {}).items():
+        if raw.strip():
+            pages[u] = (pages.get(u) or "") + _as_text(raw)
+    read = {u: t for u, t in pages.items() if t and t.strip()}
     out, seen = [], set()
     for m in _QUOTE.finditer(answer):
         quote = " ".join((m.group(1) or m.group(2)).split())
@@ -145,25 +159,52 @@ def pool(question: str) -> dict | None:
         return m["web"]
     result = None
     if enabled():
-        try:
-            r = llm.web_search(question, RESEARCH_SYSTEM)
-        except (llm.LLMUnavailable, llm.LLMBadOutput):
-            r = None
-        if r and r["text"].strip():
-            titles = {x["url"]: x["title"] for x in r["results"] + r["citations"]}
-            # the cited pages, the pages the search returned, and the addresses the model wrote after its quotes
+        # the two searches are independent: run them together (parallel.submit keeps the question's meter counting)
+        model_f = parallel.submit(_model_search, question) if llm.configured() or not tavily.enabled() else None
+        tav_f = parallel.submit(_tavily_search, question) if tavily.enabled() else None
+        r = model_f.result() if model_f else None
+        tav = tav_f.result() if tav_f else []
+        if (r and r["text"].strip()) or tav:
+            r = r if r and r["text"].strip() else {"text": "", "citations": [], "results": []}
+            titles = {x["url"]: x["title"] for x in r["results"] + r["citations"]} | {x["url"]: x["title"] for x in tav}
+            # the cited pages, the pages the search returned, and the addresses the model wrote after its quotes;
+            # then Tavily's pages
             urls = list(dict.fromkeys([c["url"] for c in r["citations"]] + _URL.findall(r["text"])
-                                      + [x["url"] for x in r["results"]]))
-            urls = urls[:config.WEB_MAX_PAGES]
-            quotes, read = verified_quotes(r["text"], urls, titles) if urls else ([], 0)
-            # the model says whether its sources answer the question; without the marker, assume they do
-            found = not re.match(r"\W*NOT\s+FOUND", r["text"], re.I)
+                                      + [x["url"] for x in r["results"]]))[:config.WEB_MAX_PAGES]
+            urls = list(dict.fromkeys(urls + [x["url"] for x in tav]))
+            extracted = {x["url"]: x["text"] for x in tav if x["text"]}
+            quotes, read = verified_quotes(r["text"], urls, titles, extracted) if urls and r["text"] else \
+                ([], sum(1 for x in tav if x["text"]))
+            seen = {normalize(q["quote"]) for q in quotes}
+            for x in tav:   # Tavily's snippets: page text it extracted, not anything a model wrote
+                for s in tavily.snippets(x, MIN_QUOTE):
+                    if normalize(s) not in seen:
+                        seen.add(normalize(s))
+                        quotes.append({"quote": s, "url": x["url"], "title": x["title"], "via": "tavily"})
+            # the model says whether its sources answer the question; without the marker, assume they do. With only
+            # Tavily, the pool is "found" when it has quotes, and there is no written answer to offer.
+            found = not re.match(r"\W*NOT\s+FOUND", r["text"], re.I) if r["text"] else bool(quotes)
             result = {"question": question, "found": found, "answer": _readable(re.sub(r"^\W*(NOT\s+)?FOUND\s*:?", "", r["text"], flags=re.I)),
                       "quotes": quotes, "text": "\n".join(q["quote"] for q in quotes), "read": read,
-                      "sources": [{"url": u, "title": titles.get(u, "")} for u in urls]}
+                      "sources": [{"url": u, "title": titles.get(u, "")} for u in urls],
+                      "tavily": len(tav)}
     if m is not None:
         m["web"] = result
     return result
+
+
+def _model_search(question: str) -> dict | None:
+    try:
+        return llm.web_search(question, RESEARCH_SYSTEM)
+    except (llm.LLMUnavailable, llm.LLMBadOutput):
+        return None
+
+
+def _tavily_search(question: str) -> list[dict]:
+    try:
+        return tavily.search(question)
+    except tavily.Unavailable:
+        return []
 
 
 def cited(p: dict, limit: int = 3) -> list[dict]:

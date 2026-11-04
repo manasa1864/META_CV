@@ -9,8 +9,9 @@ A follow-up they do not cover is rewritten as a standalone question and handed t
 or reasoning tier.
 """
 import json
+import re
 
-from .. import llm
+from .. import config, llm, safety
 from ..db import connect
 from . import compression, factual, guardrails
 from .router import looks_computational
@@ -23,6 +24,53 @@ If the verified statements alone fully answer the follow-up, answer from them on
 If answering needs any arithmetic, list each calculation with the pure arithmetic in "expression" (digits, + - * / ** % and parentheses only) and its value in "result".
 Otherwise set answerable to false and rewrite the follow-up as a standalone question (resolve pronouns and references from the conversation, include any numbers it refers to), and say whether it needs facts ("factual") or calculation/logic ("reasoning").
 Return only JSON: {"answerable": true, "answer": "...", "used": [1], "calculations": [{"expression": "", "result": ""}], "standalone": "...", "standalone_type": "factual"}"""
+
+
+REWRITE_SYSTEM = """Rewrite the user's follow-up as ONE standalone question that can be understood without the conversation.
+Replace pronouns and references ("she", "that man", "it", "the city", "the total", "what is left") with what they refer to in
+the conversation, and include the numbers from earlier turns that the question depends on (amounts, results). Do not answer it,
+do not add anything the conversation does not say, and keep the user's wording otherwise. If it already stands on its own,
+return it unchanged.
+Return only JSON: {"standalone": "..."}"""
+
+# words that can point back into the conversation; a follow-up without any is routed as it is (no rewrite call)
+_REFERS = re.compile(r"\b(?:he|she|it|they|him|her|his|hers|its|their|them|this|that|these|those|there|then|so|again|same|"
+                     r"also|too|original|total|remaining|rest|left|now|previous|earlier|above|before|first|last|new|instead|"
+                     r"else|more|less|another|one|ones|what about|how about|and)\b", re.I)
+_NAMEISH = re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b")
+_NUM = re.compile(r"\d+(?:[.,]\d+)*")
+
+
+def _unsupported(standalone: str, question: str, hist: list[dict]) -> list[str]:
+    """Names and numbers in the rewrite that neither the follow-up nor the conversation contains (empty: it only re-uses)."""
+    seen = (question + " " + " ".join(f"{t['question']} {t['answer']}" for t in hist)).lower()
+    seen_nums = {n.replace(",", "") for n in _NUM.findall(seen)}
+    out = [n for n in _NUM.findall(standalone) if n.replace(",", "") not in seen_nums]
+    sentence_start = {m.group(0) for m in re.finditer(r"(?:^|[.?!]\s+)([A-Z][a-z]+)", standalone)}
+    out += [w for w in _NAMEISH.findall(standalone) if w.lower() not in seen and w not in sentence_start
+            and not all(p.lower() in seen for p in w.split())]
+    return out
+
+
+def rewrite(question: str, hist: list[dict], trace: Trace):
+    """Generator: the follow-up as a standalone question, or the question unchanged (no history, nothing refers back, the
+    rewrite failed, or it would add a name or number the conversation does not contain)."""
+    if not hist or not config.FOLLOWUP_REWRITE or not _REFERS.search(question):
+        return question
+    try:
+        d = llm.chat_json(REWRITE_SYSTEM, f"Conversation so far:\n{history_text(hist, question)}\n\nFollow-up: {question}")
+    except (llm.LLMBadOutput, llm.LLMUnavailable, llm.LLMNotConfigured):
+        return question
+    standalone = str((d or {}).get("standalone") or "").strip() if isinstance(d, dict) else ""
+    if not standalone or standalone.rstrip("?. ").lower() == question.rstrip("?. ").lower():
+        return question
+    extra = _unsupported(standalone, question, hist)
+    if extra or safety.injection_signals(standalone):
+        why = f"it added {', '.join(extra)}, which the conversation does not contain" if extra else "it carried instruction-like text"
+        yield trace.note("consistency", "Follow-up kept as asked", f"A rewrite was rejected: {why}.", "warn")
+        return question
+    yield trace.note("consistency", "Follow-up rewritten from the conversation", f"“{question}” → “{standalone}”", "ok")
+    return standalone
 
 
 def history(conversation_id: str | None, limit: int = HISTORY_TURNS) -> list[dict]:

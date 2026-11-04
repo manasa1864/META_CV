@@ -347,3 +347,15 @@ def test_grading():
     assert grade("She won it in 1817.", expect_abstain=True) == "hallucinated"
     assert grade("anything", ["x"], stopped=True) == "abstained"
     assert wilson(0, 10)[0] == 0.0 and wilson(10, 10)[1] == 1.0 and wilson(0, 0) is None
+
+
+def test_a_suspected_false_premise_adds_a_hint_to_the_draft_request_and_other_questions_do_not(fake_llm):
+    store = seeded_store()
+    fake_llm.on(DRAFT, lambda u, t: {"claims": [{"subject": "jane austen", "relation": "born_in", "object": "steventon"}]})
+    fake_llm.on(COMPOSE, lambda u, t: "Jane Austen was born in Steventon.")
+    fake_llm.on(ROUTER, lambda u, t: {"type": "factual", "entities": ["jane austen"], "false_premise_suspected": True})
+    run(store, "Why was Jane Austen born in Bath?")
+    assert "may rest on a false assumption" in fake_llm.prompts[DRAFT][0]
+    fake_llm.on(ROUTER, lambda u, t: {"type": "factual", "entities": ["jane austen"]})
+    run(store, "Where was Jane Austen born?")
+    assert "false assumption" not in fake_llm.prompts[DRAFT][1]

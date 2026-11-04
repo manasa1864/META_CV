@@ -138,7 +138,7 @@ def has_private_data(text: str) -> bool:
 
 
 def _secrets() -> list[str]:
-    vals = (config.META_API_KEY, config.META_JUDGE_API_KEY, config.NEO4J_PASSWORD, config.ADMIN_TOKEN)
+    vals = (config.META_API_KEY, config.META_JUDGE_API_KEY, config.NEO4J_PASSWORD, config.ADMIN_TOKEN, config.TAVILY_API_KEY)
     return sorted({v for v in vals if v and len(v) >= 8}, key=len, reverse=True)
 
 

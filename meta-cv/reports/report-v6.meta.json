@@ -1,0 +1,17 @@
+{
+ "version": 6,
+ "date": "2026-11-03 23:32",
+ "commit": "73083b9 (uncommitted changes)",
+ "mode": "full",
+ "only": [
+  "e2e",
+  "live"
+ ],
+ "based_on": 5,
+ "label": "Cross-check made safe, and extended to authors and founders",
+ "notes": "Two general changes after version 5: Wikidata may contradict a claim only when its best match is labelled with the name (version 5's Napoleon control was overwritten by an alias-only joke entry), and a stored value missing from a complete Wikidata list (author, director, founder, capital, spouse) is no longer served as verified but re-drafted and checked. Seen failing cases moved to the development set (e2e-14 Napoleon, e2e-15 Hamlet). New unseen held-out cases ho-e2e-19 to 24 (Mandela and Beethoven controls, Inception and Microsoft wrong stored facts, Frankenstein and Apple controls) were written before these changes were run. The live questions are re-run because the check now applies to answers from the real graph. Other sections are kept from version 4.",
+ "sections_run": [
+  "e2e",
+  "live"
+ ]
+}

@@ -27,6 +27,14 @@ class LLMBadOutput(ValueError):
     pass
 
 
+class LLMRefused(RuntimeError):
+    """The model provider's content policy rejected the request (HTTP 400 content_policy_violation)."""
+
+
+def _refusal(e: Exception) -> bool:
+    return "content_policy" in str(e) or "content management policy" in str(e)
+
+
 def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
@@ -110,6 +118,8 @@ def _complete(system: str, user: str, temperature: float, judge: bool = False):
             last = e
         except openai.APIStatusError as e:
             if e.status_code < 500:
+                if _refusal(e):
+                    raise LLMRefused("the provider's content policy rejected the request") from e
                 raise
             last = e
         time.sleep(min(8.0, 0.5 * 2 ** attempt) + random.random() * 0.3)
@@ -138,6 +148,8 @@ def web_search(question: str, system: str) -> dict:
             last = e
         except openai.APIStatusError as e:
             if e.status_code < 500:
+                if _refusal(e):
+                    raise LLMRefused("the provider's content policy rejected the request") from e
                 raise
             last = e
         time.sleep(min(8.0, 0.5 * 2 ** attempt) + random.random() * 0.3)

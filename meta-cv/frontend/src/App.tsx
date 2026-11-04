@@ -90,6 +90,7 @@ const STAGES: Record<string, string> = {
   graph: 'Knowledge graph',
   factual: 'Factual verification',
   reasoning: 'Reasoning checks',
+  explain: 'Open-ended answer',
   compose: 'Composing',
   compression: 'Reusing verified work',
   planner: 'Facts first, then the calculation',
@@ -890,6 +891,7 @@ const TIER_LINE: Record<string, string> = {
   factual: 'Every claim was checked against the knowledge graph before moving to the next one.',
   reasoning: 'Each step was machine-checked, contradictions were backtracked, and independent solutions were cross-checked.',
   consistency: 'Answered from statements this conversation already verified, re-checked against the graph.',
+  explain: 'An open-ended answer written by the model: every calculation in it was machine-checked; the explanation itself is not verified.',
 }
 
 const STOP_REASONS: Record<string, string> = {
@@ -900,6 +902,7 @@ const STOP_REASONS: Record<string, string> = {
   premise_unverified: 'The calculation needed a fact that could not be verified.',
   budget: 'The question needed more checking than one answer is allowed.',
   unsafe_output: 'The answer repeated internal instructions, so it was withheld.',
+  refused: "The model provider's content policy blocked this request, so Bloop declined it.",
 }
 
 const RISK_LABELS: Record<string, string> = {

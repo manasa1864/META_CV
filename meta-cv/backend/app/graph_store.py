@@ -270,7 +270,11 @@ class ResilientStore:
             import os
 
             if not os.path.exists(self._snapshot_path):
-                raise GraphUnavailable("the graph is unreachable and no snapshot is bundled")
+                # No snapshot was exported. Failing the question would be the worst outcome: answer without stored facts instead
+                # (Wikidata, Wikipedia, the web and the model's checks still work), read-only, and report `degraded`.
+                log.warning("the graph is unreachable and no snapshot is bundled; answering without stored facts")
+                self._snapshot = SqliteGraphStore(read_only=True)
+                return self._snapshot
             self._snapshot = SqliteGraphStore(self._snapshot_path, read_only=True)
         return self._snapshot
 

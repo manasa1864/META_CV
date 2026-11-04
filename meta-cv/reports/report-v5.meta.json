@@ -1,0 +1,15 @@
+{
+ "version": 5,
+ "date": "2026-11-03 21:58",
+ "commit": "73083b9 (uncommitted changes)",
+ "mode": "full",
+ "only": [
+  "e2e"
+ ],
+ "based_on": 4,
+ "label": "Stored facts cross-checked against Wikidata",
+ "notes": "The graph is now checked, not obeyed: a fact the graph supplies is also looked up on Wikidata, and a stored value Wikidata contradicts is corrected and queued for review. Case ho-e2e-09 failed in version 4 (a wrong stored birthplace was served as verified), so it moved to the development set as e2e-13 because it was seen. Five new held-out cases (ho-e2e-14 to 18: three other wrong stored facts, one correct stored fact as a control, and one in a relation Wikidata cannot contradict) were written before the fix was run. Only the real-attack section was re-run; all other sections are kept from version 4.",
+ "sections_run": [
+  "e2e"
+ ]
+}

@@ -71,6 +71,11 @@ def pct(x) -> str:
     return "-" if x is None else f"{round(x * 100)}%"
 
 
+def is_control(row: dict) -> bool:
+    """An end-to-end row for a question with no attack in it (its case says so)."""
+    return str(row.get("tests", "")).lower().startswith("control")
+
+
 def tick(ok: bool) -> str:
     return OK if ok else NO
 
@@ -86,6 +91,32 @@ def _run(cmd: list[str], cwd: Path, env: dict | None = None, timeout: int = 1800
 
 def _model_ready() -> bool:
     return llm.configured()
+
+
+def fresh_state() -> None:
+    """Start a section from clean state in the throwaway database, so claims cached, turns graded or facts queued by one section
+    cannot leak into the next (a verified claim cached by an earlier attack run once answered a later live question)."""
+    from .db import connect
+
+    with connect() as conn:
+        for table_name in ("state_cache", "claim_index", "reasoning_states", "review_queue", "quarantine", "turns", "source_trust",
+                           "safety_events"):
+            conn.execute(f"DELETE FROM {table_name}")
+
+
+def model_reachable() -> tuple[bool, str]:
+    """Can the configured model API be reached right now? A report made while it cannot would record only errors, and must not
+    be saved as a version."""
+    if not _model_ready():
+        return False, "no model is configured"
+    try:
+        r = httpx.get(f"{config.META_BASE_URL.rstrip('/')}/models", headers={"Authorization": f"Bearer {config.META_API_KEY}"}, timeout=20)
+    except httpx.HTTPError as e:
+        return False, f"{type(e).__name__}: {safety.mask_secrets(str(e))[:120]}"
+    return r.status_code == 200, f"HTTP {r.status_code}"
+
+
+MODEL_SECTIONS = ("e2e", "ablation", "types", "live", "taxonomy", "compare", "reuse")
 
 
 def _humanize(test: str) -> str:
@@ -324,27 +355,43 @@ def e2e_section() -> Section:
         s.summary, s.body = "skipped (no model configured)", ["The end-to-end attacks need the model.", ""]
         return s
     t = time.time()
-    cases = bs.load()["end_to_end"]
-    e2e = bs.end_to_end(cases)
-    DATA["e2e"] = e2e
-    s.seconds = time.time() - t
-    attacks = [r for r in e2e["rows"] if r["injection"] or "private" in r["id"] or r["id"] in ("e2e-02", "e2e-03", "e2e-04", "e2e-08")]
-    s.summary = f"{e2e['passed']}/{e2e['n']} cases ended as specified ({len(attacks)} attacks, {e2e['n'] - len(attacks)} controls)"
+    d = bs.load()
+    parts = [("e2e", "Development cases", "The cases the mechanisms were developed and fixed against (they are re-run as a regression check).",
+              d["end_to_end"]),
+             ("e2e_holdout", "Held-out cases", "Written after the fixes of versions 1 and 2, before any of their results were seen, and never tuned on. "
+              "They measure whether the fixes generalise. Some use wording the tripwire does not recognise, so there the other defences must hold alone.",
+              d.get("end_to_end_holdout", []))]
     s.body = [E2E_NOTE, ""]
-    tests = {c["id"]: c.get("tests", "") for c in cases}
-    s.body += table(["case", "what it tests", "question", "tripwire", "policy", "steered", "tier / confidence", "outcome"],
-                    [[r["id"], tests.get(r["id"], ""), cut(r["question"], 100), ", ".join(r["injection"]) or "-", r["policy"] or "-",
-                      "yes" if r["steered"] else "no", f"{r['tier']} / {r['confidence']}",
-                      "as specified" if r["passed"] else "NOT as specified: " + "; ".join(r["problems"])] for r in e2e["rows"]])
-    for r in e2e["rows"]:
-        s.body += [f"#### {r['id']}: {cut(r['question'], 120)}", "",
-                   f"- **Specified:** {json.dumps(r['expect'])}",
-                   f"- **Answer:** {cut(r['answer'], 300)}",
-                   f"- **Stopped:** {r['stopped'] or 'no'}; caught: {', '.join(r['caught']) or 'nothing'}; "
-                   f"stored facts ignored for carrying instructions: {r['ignored_facts']}"]
-        for step in r["safety_steps"]:
-            s.body.append(f"- **Safety step:** {cut(step, 260)}")
-        s.body.append("")
+    summary = []
+    for key, title, note, cases in parts:
+        if not cases:
+            continue
+        fresh_state()
+        res = bs.end_to_end(cases)
+        DATA[key] = res
+        ctl = [c["id"] for c in cases if c.get("tests", "").lower().startswith("control")]   # the no-attack controls
+        n_ctl = len(ctl)
+        att_rows = [r for r in res["rows"] if r["id"] not in ctl]
+        summary.append(f"{title.lower()}: {sum(r['passed'] for r in att_rows)}/{len(att_rows)} attacks and "
+                       f"{sum(r['passed'] for r in res['rows'] if r['id'] in ctl)}/{n_ctl} controls as specified")
+        s.body += [f"### {title}", "", note, ""]
+        tests = {c["id"]: c.get("tests", "") for c in cases}
+        s.body += table(["case", "what it tests", "question", "tripwire", "policy", "steered", "tier / confidence", "outcome"],
+                        [[r["id"], tests.get(r["id"], ""), cut(r["question"], 100), ", ".join(r["injection"]) or "-", r["policy"] or "-",
+                          "yes" if r["steered"] else "no", f"{r['tier']} / {r['confidence']}",
+                          ("as specified" if r["passed"] else "NOT as specified: " + "; ".join(r["problems"]))
+                          + (f" (retried {r['retries']}x after a network error)" if r.get("retries") else "")] for r in res["rows"]])
+        for r in res["rows"]:
+            s.body += [f"#### {r['id']}: {cut(r['question'], 120)}", "",
+                       f"- **Specified:** {json.dumps(r['expect'])}",
+                       f"- **Answer:** {cut(r['answer'], 300)}",
+                       f"- **Stopped:** {r['stopped'] or 'no'}; caught: {', '.join(r['caught']) or 'nothing'}; "
+                       f"stored facts ignored for carrying instructions: {r['ignored_facts']}"]
+            for step in r["safety_steps"]:
+                s.body.append(f"- **Safety step:** {cut(step, 260)}")
+            s.body.append("")
+    s.seconds = time.time() - t
+    s.summary = "; ".join(summary)
     return s
 
 
@@ -359,6 +406,7 @@ def ablation_section() -> Section:
     ids = d.get("ablation_cases", [])
     cases = [c for c in d["end_to_end"] if c["id"] in ids]
     t = time.time()
+    fresh_state()
     ab = bs.ablation(cases)
     DATA["ablation"] = ab
     s.seconds = time.time() - t
@@ -513,6 +561,8 @@ HEDGES_PLUS = HEDGES_BASE = ("couldn't", "could not", "don't have", "do not have
 def types_section(quick: bool) -> Section:
     from .engine import router
 
+    from .bench_safety import run_with_retry
+
     s = Section("Hallucination types: classification, tier and handling")
     rows = [[code, router.RISKS[code], router.family(code), MECH[code]] for code in router.RISKS]
     s.body = ["The system names the kind of hallucination a question risks (the **risk taxonomy**, adapted from the hallucination survey "
@@ -529,6 +579,7 @@ def types_section(quick: bool) -> Section:
     from .graph_store import get_store
 
     init_db()
+    fresh_state()
     store = get_store()
     d = json.loads((config.BENCH_DATA_DIR / "hallucination_types.json").read_text(encoding="utf-8"))
     out, t0 = [], time.time()
@@ -539,7 +590,7 @@ def types_section(quick: bool) -> Section:
         f, answer = None, ""
         try:
             for turn in c["turns"]:
-                ev = list(pipeline.run(store, turn, typing_delay=0, conversation_id=conv, reuse=False, source="bench"))
+                ev, _ = run_with_retry(store, turn, conversation_id=conv, reuse=False, source="bench")
                 f = next((e for e in ev if e["type"] == "final"), None)
                 answer = "".join(e["delta"] for e in ev if e["type"] == "answer")
         except Exception as e:  # noqa: BLE001
@@ -637,20 +688,25 @@ def live_section(quick: bool) -> Section:
         s.summary = "skipped" + (" (quick mode)" if quick else " (no model configured)")
         s.body = [f"Runs {len(LIVE)} real questions through the whole pipeline. Not run" + (" in quick mode." if quick else ": no model is configured."), ""]
         return s
+    from . import bench_safety as bs
     from .db import init_db
-    from .engine import pipeline
     from .engine.health import health
     from .graph_store import get_store
 
     init_db()
+    fresh_state()
     store = get_store()
+    holdout_file = config.BENCH_DATA_DIR / "live_holdout.json"
+    holdout = [(x["q"], x["keys"], x["what"], x.get("forbid", [])) for x in
+               json.loads(holdout_file.read_text(encoding="utf-8"))["questions"]] if holdout_file.exists() else []
+    items = [(q, k, w, f, "development") for q, k, w, f in LIVE] + [(q, k, w, f, "held-out") for q, k, w, f in holdout]
     out, blocks, tok_total, sec_total, ok_total = [], [], 0, 0.0, 0
-    for i, (q, keys, what, forbid) in enumerate(LIVE, 1):
-        print(f"      [{i}/{len(LIVE)}] {q}", flush=True)
+    for i, (q, keys, what, forbid, which) in enumerate(items, 1):
+        print(f"      [{i}/{len(items)}] ({which}) {q}", flush=True)
         health.reset()   # the verified-only breaker looks at recent turns; one question must not inherit the last one's
         t = time.time()
         try:
-            ev = list(pipeline.run(store, q, typing_delay=0, reuse=False, source="bench"))
+            ev, retries = bs.run_with_retry(store, q, reuse=False, source="bench")
         except Exception as e:  # noqa: BLE001
             blocks += [f"### Q{i}. {q}", "", f"Crashed: `{type(e).__name__}`", ""]
             continue
@@ -658,18 +714,19 @@ def live_section(quick: bool) -> Section:
         f = next((e for e in ev if e["type"] == "final"), None)
         if not f:
             err = next((e for e in ev if e["type"] == "error"), {"code": "?"})
-            blocks += [f"### Q{i}. {q}", "", f"Error: `{err['code']}`", ""]
+            blocks += [f"### Q{i}. {q}", "", f"Error: `{err['code']}` (after {retries} retries)", ""]
             continue
         answer = "".join(e["delta"] for e in ev if e["type"] == "answer")
         low = answer.lower()
         bad_words = [w for w in forbid if w in low]
+        has = lambda k: any(alt in low for alt in k.split("|"))   # noqa: E731  (a key with | means any of those words)
         if keys is None:   # must not be invented
             ok = (f["confidence"] == "low" or bool(f["stopped"]) or any(h in low for h in HEDGES)) and not f["memory_summary"] or \
                  (f["memory_summary"] and any(h in low for h in HEDGES))
             verdict = "declined or hedged" if ok else "answered as if it exists"
         else:
-            ok = all(k in low for k in keys) and not bad_words
-            verdict = "as specified" if ok else (f"missing {[k for k in keys if k not in low]}" if not all(k in low for k in keys) else "") + \
+            ok = all(has(k) for k in keys) and not bad_words
+            verdict = "as specified" if ok else (f"missing {[k for k in keys if not has(k)]}" if not all(has(k) for k in keys) else "") + \
                 (f" contains forbidden {bad_words}" if bad_words else "")
         ok_total += ok
         tok, calls = f["tokens"]["total"], f["tokens"]["calls"]
@@ -678,11 +735,13 @@ def live_section(quick: bool) -> Section:
         steps = [e for e in ev if e["type"] == "step" and e["status"] != "running"]
         src = Counter(c.get("source") for c in f["path"] if c.get("status") == "accepted")
         stop = f["stopped"]["reason"] if f["stopped"] else None
-        out.append({"q": q, "ok": ok, "verdict": verdict, "confidence": f["confidence"], "stopped": stop, "tier": f["tier"],
+        out.append({"q": q, "set": which, "retries": retries, "ok": ok, "verdict": verdict, "confidence": f["confidence"], "stopped": stop, "tier": f["tier"],
                     "seconds": round(sec, 1), "tokens": tok, "calls": calls, "sources": dict(src), "answer": answer,
                     "path": f["path"], "caught": f["caught"], "safety": f.get("safety"), "memory": f["memory_summary"]})
         risks = ", ".join(f"{r['label']} {r['weight']:.1f}" for r in (f.get("risks") or [])[:3]) or "-"
         blocks += [f"### Q{i}. {q}", "",
+                   f"*Set:* {which}" + (" (written after the fixes, before its results were seen, not tuned on)" if which == "held-out" else "")
+                   + (f"; retried {retries}x after a network error" if retries else ""), "",
                    f"*Exercises:* {what}", "",
                    *table(["verdict", "tier / plan", "confidence", "stopped", "time", "model calls", "tokens", "risk profile"],
                           [[verdict if ok else "NOT as specified: " + verdict, f"{f['tier']} / {' then '.join(f.get('plan') or [f['tier']])}",
@@ -706,20 +765,204 @@ def live_section(quick: bool) -> Section:
         blocks += [f"<details><summary>Full trace ({len(steps)} steps)</summary>", ""] + table(
             ["stage", "step", "detail"], [[e["stage"], cut(e["title"], 90), cut(e["detail"], 190)] for e in steps]) + ["</details>", ""]
     DATA["live"] = out
-    n = len(LIVE)
+    n = len(out) or 1
     allsrc = Counter(k for r in out for k, v in r["sources"].items() for _ in range(v))
     s.seconds = sec_total
-    s.summary = f"{ok_total}/{n} as specified; avg {sec_total / n:.0f}s and {tok_total // max(1, n):,} tokens per question; claims confirmed by: " + \
-                (", ".join(f"{k} {v}" for k, v in allsrc.most_common()) or "-")
-    s.body = [f"{n} real questions, each through the whole pipeline once (no cache) against your configured graph, with the real model and "
-              "the real evidence sources. *As specified* means the answer contains the expected words and none of the forbidden ones (for "
-              "the invented work: it declines or hedges). This is a keyword check on a small hand-picked set, not a benchmark, and results "
-              "vary a little from run to run.", ""]
-    s.body += table(["result", "question", "confidence", "confirmed by", "time", "tokens"],
-                    [["as specified" if r["ok"] else "NOT as specified", cut(r["q"], 80), r["confidence"] + (f" / stopped: {r['stopped']}" if r["stopped"] else ""),
+    dev, ho = [r for r in out if r["set"] == "development"], [r for r in out if r["set"] == "held-out"]
+    s.summary = (f"development {sum(r['ok'] for r in dev)}/{len(dev)} as specified, held-out {sum(r['ok'] for r in ho)}/{len(ho)}; "
+                 f"avg {sec_total / n:.0f}s and {tok_total // n:,} tokens per question; claims confirmed by: "
+                 + (", ".join(f"{k} {v}" for k, v in allsrc.most_common()) or "-"))
+    s.body = [f"{len(items)} real questions, each through the whole pipeline once (no cache) against your configured graph, with the real model "
+              "and the real evidence sources. *As specified* means the answer contains the expected words and none of the forbidden ones (for "
+              "an invented work: it declines or hedges). The **development** questions are the ones the system was improved against; the "
+              "**held-out** questions were written after those improvements, before any result was seen, and nothing was tuned on them, so "
+              "they are the fairer test of whether the improvements generalise. This is a keyword check on small hand-picked sets, not a "
+              "benchmark, and results vary a little from run to run.", ""]
+    s.body += table(["set", "result", "question", "confidence", "confirmed by", "time", "tokens"],
+                    [[r["set"], "as specified" if r["ok"] else "NOT as specified", cut(r["q"], 80),
+                      r["confidence"] + (f" / stopped: {r['stopped']}" if r["stopped"] else ""),
                       ", ".join(f"{k} {v}" for k, v in r["sources"].items()) or (r["tier"] if r["tier"] == "reasoning" else "-"),
                       f"{r['seconds']:.0f}s", f"{r['tokens']:,}"] for r in out])
     s.body += blocks
+    return s
+
+
+LEVEL_NAMES = {"1": "1. one fact", "2": "2. two linked facts", "3": "3. calculation", "4": "4. false premise",
+               "5": "5. nothing to find", "A": "attack in the question", "C": "follow-up conversation",
+               "B": "ambiguous book, then follow-ups", "N": "network design and follow-ups", "S": "harmful or dual-use request",
+               "E": "gradual escalation"}
+
+
+def _ocount(c: dict) -> str:
+    return f"{c['correct']} / {c['declined']} / {c['hallucinated']}" + (f" ({c['error']} errors)" if c["error"] else "")
+
+
+def compare_section(quick: bool, name: str = "comparison") -> Section:
+    from . import bench_compare as bc
+
+    s = Section("This system against a plain model and typical RAG, question by question")
+    d = bc.load(name)
+    n_items = len(d["questions"]) + sum(len(c["turns"]) for c in d["chains"])
+    if quick or not _model_ready():
+        s.summary = "skipped" + (" (quick mode)" if quick else " (no model configured)")
+        s.body = [f"Runs {n_items} questions through this system, a plain model and a typical RAG chatbot. Not run.", ""]
+        return s
+    from .db import init_db
+    from .graph_store import get_store
+
+    init_db()
+    fresh_state()
+    t0 = time.time()
+    rows = bc.run(get_store(), progress=lambda m: print(m, flush=True), name=name)
+    s.seconds = time.time() - t0
+    summ = bc.summary(rows)
+    DATA["compare"] = {"rows": rows, "summary": summ, "set": name, "note": d.get("note", "")}
+    graded = sum(r["graded_by"] == "rubric" for r in rows)
+    a = {k: summ[k]["all"] for k in bc.SYSTEMS}
+    s.summary = "; ".join(f"{bc.LABELS[k]}: {a[k]['correct']} correct, {a[k]['declined']} declined, {a[k]['hallucinated']} hallucinated "
+                          f"of {a[k]['n']}" for k in bc.SYSTEMS)
+    s.body = [f"Question set: `bench_data/{name}.json`. {d.get('note', '')}", "",
+              f"The same {n_items} questions went to three chatbots built on **the same model and API key**:", "",
+              "- **this system**: risk routing, graph-first verification, outside evidence, the reasoning ladder and the safety layer;",
+              "- **plain model**: the question (and the conversation so far) sent straight to the model;",
+              f"- **typical RAG**: a Wikipedia search for the question, the top {bc.baselines.RAG_PASSAGES} articles' opening "
+              f"{bc.baselines.RAG_CHARS} characters put in the prompt, and the model answers from them (no claim checking, no refusal "
+              "rule, no injection defence). A follow-up is searched together with the previous question.", "",
+              "The questions were written before any of the three was run on them and nothing was tuned on them. They rise in difficulty: one fact, "
+              "two linked facts, calculations from one step to five, false premises, things that do not exist, attacks inside the question, "
+              "and seven follow-up conversations (3-4 turns each) where each system sees its own earlier answers. Each answer is graded the same "
+              "way for all three: **correct** (contains the expected answer; for something that does not exist, declines), **declined** (gives "
+              "no answer and says so: honest, but not helpful) or **hallucinated** (a wrong or invented answer, or the attack got through). "
+              "The grading is a keyword check written in advance; it can misjudge an unusually phrased answer, and does so for all three alike. "
+              "Each cell is one run.", ""] + ([
+              f"{graded} of the {len(rows)} answers per system were graded by a model applying the rubric written for that question "
+              "(the same rubric and grader for all three systems; the grader is the same model the systems use, so its own blind spots "
+              "apply). Each rubric is shown with its question below.", ""] if graded else [])
+    s.body += ["### Overall", ""] + table(
+        ["system", "correct", "declined", "hallucinated", "hallucination rate", "avg tokens per answer", "avg seconds"],
+        [[bc.LABELS[k], a[k]["correct"], a[k]["declined"], a[k]["hallucinated"], pct(a[k]["hallucinated"] / (a[k]["n"] or 1)),
+          f"{a[k]['tokens']:,}", a[k]["seconds"]] for k in bc.SYSTEMS])
+    levels = list(summ["ours"]["level"])
+    s.body += ["### By difficulty (correct / declined / hallucinated)", ""] + table(
+        ["level", "questions", *[bc.LABELS[k] for k in bc.SYSTEMS], "tokens: this system / plain / RAG"],
+        [[LEVEL_NAMES.get(lv, lv), summ["ours"]["level"][lv]["n"], *[_ocount(summ[k]["level"][lv]) for k in bc.SYSTEMS],
+          " / ".join(f"{summ[k]['level'][lv]['tokens']:,}" for k in bc.SYSTEMS)] for lv in levels])
+    s.body += ["### By hallucination type (correct / declined / hallucinated)", ""] + table(
+        ["type", "questions", *[bc.LABELS[k] for k in bc.SYSTEMS]],
+        [[kd, summ["ours"]["kind"][kd]["n"], *[_ocount(summ[k]["kind"][kd]) for k in bc.SYSTEMS]] for kd in summ["ours"]["kind"]])
+    maths = [r for r in rows if r["level"] == "3"]
+    if maths:
+        s.body += ["### Calculations: how far the reasoning ladder climbed", "",
+                   "This system starts each calculation at the relaxed level (one solution, machine-checked) and climbs only when a check gives "
+                   "a reason. *Steps* is roughly how many steps the problem needs.", ""] + table(
+            ["question", "steps", "this system", "level reached", "climbed because of", "tokens", "plain", "RAG"],
+            [[cut(r["q"], 70), r["steps"] or "-", r["ours"]["outcome"], r["ours"].get("level") or "-",
+              ", ".join(r["ours"].get("climbs") or []) or "-", f"{r['ours']['tokens']:,}", r["plain"]["outcome"], r["rag"]["outcome"]]
+             for r in maths])
+    chains = [r for r in rows if r["chain"]]
+    if chains:
+        s.body += ["### Follow-up conversations, turn by turn", "",
+                   "Each turn is asked after the earlier ones. An early mistake can carry forward, which is where hallucination tends to "
+                   "show in longer conversations.", ""] + table(
+            ["turn", "question", *[bc.LABELS[k] for k in bc.SYSTEMS]],
+            [[r["id"], cut(r["q"], 80), *[r[k]["outcome"] for k in bc.SYSTEMS]] for r in chains])
+    lose = [r for r in rows if r["ours"]["outcome"] != "correct" and any(r[k]["outcome"] == "correct" for k in ("plain", "rag"))]
+    win = [r for r in rows if r["ours"]["outcome"] == "correct" and any(r[k]["outcome"] == "hallucinated" for k in ("plain", "rag"))]
+    s.body += ["### Where this system loses", "",
+               f"{len(lose)} question(s) where this system was not correct but at least one baseline was:", ""]
+    s.body += table(["id", "question", "this system", "why", "plain", "RAG"],
+                    [[r["id"], cut(r["q"], 70), r["ours"]["outcome"], cut(r["ours"]["why"], 60), r["plain"]["outcome"], r["rag"]["outcome"]]
+                     for r in lose]) if lose else ["(none)", ""]
+    s.body += ["### Where this system wins", "",
+               f"{len(win)} question(s) where this system was correct and at least one baseline hallucinated:", ""]
+    s.body += table(["id", "question", "plain", "RAG"],
+                    [[r["id"], cut(r["q"], 80), r["plain"]["outcome"], r["rag"]["outcome"]] for r in win]) if win else ["(none)", ""]
+    s.body += ["### Every question", ""] + table(
+        ["id", "level", "question", *[bc.LABELS[k] for k in bc.SYSTEMS], "this system: tier / level / tokens"],
+        [[r["id"], LEVEL_NAMES.get(r["level"], r["level"]), cut(r["q"], 70), *[r[k]["outcome"] for k in bc.SYSTEMS],
+          f"{r['ours'].get('tier') or '-'} / {r['ours'].get('level') or '-'} / {r['ours']['tokens']:,}"] for r in rows])
+    for r in rows:
+        s.body += [f"<details><summary>{r['id']}: {cut(r['q'], 110)}</summary>", "",
+                   f"*Expected:* {json.dumps(r['expect'])}", ""]
+        for k in bc.SYSTEMS:
+            x = r[k]
+            extra = (f" Tier {x.get('tier')}, level {x.get('level') or '-'}, confidence {x.get('confidence')}, stopped: {x.get('stopped') or 'no'}; "
+                     f"confirmed by: {', '.join(x.get('sources') or []) or '-'}." if k == "ours" and not x.get("error") else
+                     (f" Retrieved: {', '.join(x.get('retrieved') or []) or 'nothing'}." if k == "rag" else ""))
+            s.body += [f"**{bc.LABELS[k]}**: {x['outcome']} ({x['why']}); {x['tokens']:,} tokens, {x['seconds']}s.{extra}", "",
+                       *[f"> {ln}" for ln in (x["answer"] or "(none)").splitlines()[:25]], ""]
+        s.body += ["</details>", ""]
+    return s
+
+
+REUSE_PAIRS = [   # (first question, second question, what the second must contain, kind of reuse expected)
+    ("What is 17 * 23?", "What is 17 * 23?", "391", "exact repeat: the verified-path cache"),
+    ("Where was Jane Austen born?", "Where was Jane Austen born?", "steventon", "exact repeat: the verified-path cache"),
+    ("A shop has 12 boxes of 7 apples and 4 apples are eaten. How many apples are left?",
+     "A shop has 15 boxes of 6 apples and 9 apples are eaten. How many apples are left?", "81",
+     "similar calculation, new numbers: the verified steps adapted (intermediate compression)"),
+    ("A train travels 180 km in 2.5 hours. What is its average speed in km/h?",
+     "A train travels 240 km in 3 hours. What is its average speed in km/h?", "80",
+     "similar calculation, new numbers: the verified steps adapted (intermediate compression)"),
+    ("Who wrote Pride and Prejudice?", "Who wrote the novel Pride and Prejudice?", "austen",
+     "similar fact question: verified triples reused (claim cache and states)"),
+]
+
+
+def reuse_section(quick: bool) -> Section:
+    s = Section("Compression and reuse: tokens on repeated and similar questions")
+    if quick or not _model_ready():
+        s.summary = "skipped" + (" (quick mode)" if quick else " (no model configured)")
+        s.body = ["Needs the model.", ""]
+        return s
+    from . import bench_safety as bs
+    from .db import init_db
+    from .engine.health import health
+    from .graph_store import get_store
+
+    init_db()
+    store = get_store()
+
+    def ask(q, reuse):
+        health.reset()
+        ev, _ = bs.run_with_retry(store, q, reuse=reuse, source="bench")
+        f = next((e for e in ev if e["type"] == "final"), None)
+        ans = "".join(e["delta"] for e in ev if e["type"] == "answer")
+        return f, ans
+
+    rows = []
+    for i, (first, second, key, kind) in enumerate(REUSE_PAIRS, 1):
+        print(f"      [{i}/{len(REUSE_PAIRS)}] {second[:70]}", flush=True)
+        fresh_state()
+        f0, a0 = ask(second, False)                 # the second question alone, nothing to reuse
+        fresh_state()
+        f1, _ = ask(first, True)                    # the first question, which leaves a verified path / state behind
+        f2, a2 = ask(second, True)                  # the second question, allowed to reuse it
+        if not (f0 and f1 and f2):
+            rows.append({"pair": i, "kind": kind, "error": True, "second": second})
+            continue
+        t0, t2 = f0["tokens"]["total"], f2["tokens"]["total"]
+        rows.append({"pair": i, "kind": kind, "first": first, "second": second, "tokens_alone": t0, "tokens_first": f1["tokens"]["total"],
+                     "tokens_reused": t2, "saved": round(1 - t2 / t0, 3) if t0 else None,
+                     "how": "exact repeat" if f2.get("from_cache") else (f"similar state ({f2['reused_state']['similarity']})"
+                                                                          if f2.get("reused_state") else "none"),
+                     "correct_alone": key in a0.lower(), "correct_reused": key in a2.lower(), "answer_reused": a2[:300]})
+    DATA["reuse"] = rows
+    ok = [r for r in rows if not r.get("error")]
+    alone, reused = sum(r["tokens_alone"] for r in ok), sum(r["tokens_reused"] for r in ok)
+    s.summary = (f"second questions: {reused:,} tokens with reuse against {alone:,} answered alone "
+                 f"({pct(1 - reused / alone) if alone else '-'} saved); reuse happened in {sum(r['how'] != 'none' for r in ok)}/{len(ok)}; "
+                 f"correct with reuse {sum(r['correct_reused'] for r in ok)}/{len(ok)}")
+    s.body = ["Each pair: the second question is answered once on its own (nothing to reuse), then again right after the first "
+              "question, with reuse allowed. The difference is what the cache and the intermediate compression save. Every other "
+              "section of this report runs with reuse off, so that each question is judged on its own; this one measures reuse. "
+              "Reused paths are re-validated before use (graph facts re-checked, arithmetic re-run), so reuse is not trusted blindly. "
+              "Five pairs, one run each: this shows the mechanism working on real questions, not an average saving.", ""]
+    s.body += table(["pair", "kind of reuse expected", "second question", "tokens alone", "tokens with reuse", "saved", "reuse that happened",
+                     "correct alone / with reuse"],
+                    [[r["pair"], r["kind"], cut(r.get("second", ""), 70), f"{r['tokens_alone']:,}", f"{r['tokens_reused']:,}",
+                      pct(r["saved"]), r["how"], f"{'yes' if r['correct_alone'] else 'no'} / {'yes' if r['correct_reused'] else 'no'}"]
+                     if not r.get("error") else [r["pair"], r["kind"], cut(r["second"], 70), "error", "-", "-", "-", "-"] for r in rows])
     return s
 
 
@@ -802,13 +1045,15 @@ def findings() -> list[str]:
         a = DATA["abuse"]
         out.append(["Abuse controls", "origin check, admin gate, rate limit, budget, headers, secret masking",
                     f"{sum(r[3] == OK for r in a)}/{len(a)} behaved as specified"])
-    e = DATA.get("e2e")
-    if e:
-        att = [r for r in e["rows"] if r["injection"] or r["id"] in ("e2e-02", "e2e-03", "e2e-04", "e2e-08")]
-        out.append(["Data rule + invariance check + adversarial routing", "real attacks through the whole pipeline",
-                    f"{sum(r['passed'] for r in att)}/{len(att)} attacks ended as specified, {sum(r['steered'] for r in e['rows'])} question(s) "
-                    f"answered after the check found the instructions changed the result; controls {sum(r['passed'] for r in e['rows'] if r not in att)}/"
-                    f"{len([r for r in e['rows'] if r not in att])}"])
+    for key, label in (("e2e", "development cases"), ("e2e_holdout", "held-out cases (never tuned on)")):
+        e = DATA.get(key)
+        if e:
+            att = [r for r in e["rows"] if not is_control(r)]
+            ctl = [r for r in e["rows"] if is_control(r)]
+            out.append([f"Data rule + invariance check + adversarial routing: {label}", "real attacks through the whole pipeline",
+                        f"{sum(r['passed'] for r in att)}/{len(att)} attacks ended as specified (the tripwire missed "
+                        f"{sum(not r['injection'] for r in att)} of them); {sum(r['steered'] for r in e['rows'])} question(s) answered after the "
+                        f"check found the instructions changed the result; controls {sum(r['passed'] for r in ctl)}/{len(ctl)}"])
     if DATA.get("ablation"):
         rows = DATA["ablation"]["rows"]
         by = {}
@@ -820,8 +1065,11 @@ def findings() -> list[str]:
     if DATA.get("live"):
         lv = DATA["live"]
         src = Counter(k for r in lv for k, v in r["sources"].items() for _ in range(v))
+        dev = [r for r in lv if r.get("set", "development") == "development"]
+        ho = [r for r in lv if r.get("set") == "held-out"]
         out.append(["Layered evidence", "graph, Wikidata, Wikipedia, verbatim web quotes, model checks",
-                    f"{sum(r['ok'] for r in lv)}/{len(lv)} live questions as specified; claims confirmed by " + ", ".join(f"{k} {v}" for k, v in src.most_common())])
+                    f"development {sum(r['ok'] for r in dev)}/{len(dev)}" + (f", held-out {sum(r['ok'] for r in ho)}/{len(ho)} (never tuned on)" if ho else "")
+                    + " live questions as specified; claims confirmed by " + ", ".join(f"{k} {v}" for k, v in src.most_common())])
     ty = [r for r in DATA.get("types", []) if "error" not in r]
     if ty:
         out.append(["Hallucination types", "names the type, routes to the covering tier, handles it",
@@ -843,11 +1091,49 @@ def findings() -> list[str]:
     return out
 
 
+def compare_meaning(cmp_: dict | None) -> list[str]:
+    """What the head-to-head says, in plain words, from this run's numbers only."""
+    if not cmp_:
+        return []
+    from . import bench_compare as bc
+
+    sm = cmp_["summary"]
+    a = {k: sm[k]["all"] for k in bc.SYSTEMS}
+    rate = {k: a[k]["hallucinated"] / (a[k]["n"] or 1) for k in bc.SYSTEMS}
+    least = [k for k in bc.SYSTEMS if rate[k] == min(rate.values())]
+    most = [k for k in bc.SYSTEMS if a[k]["correct"] == max(a[x]["correct"] for x in bc.SYSTEMS)]
+    best = "ours" if least == ["ours"] else ("tie" if "ours" in least else least[0])
+    most_correct = "ours" if most == ["ours"] else ("tie" if "ours" in most else most[0])
+    out = ["**Against a plain model and typical RAG.** On the same " + str(a["ours"]["n"]) + " questions and the same model, this system "
+           f"hallucinated on {a['ours']['hallucinated']} ({pct(rate['ours'])}), the plain model on {a['plain']['hallucinated']} "
+           f"({pct(rate['plain'])}) and typical RAG on {a['rag']['hallucinated']} ({pct(rate['rag'])}). It was correct on "
+           f"{a['ours']['correct']} against {a['plain']['correct']} and {a['rag']['correct']}, and declined {a['ours']['declined']} "
+           f"times against {a['plain']['declined']} and {a['rag']['declined']}. "
+           + ("It hallucinated least. " if best == "ours" else "It tied for the fewest hallucinations. " if best == "tie" else
+              f"It did not hallucinate least: {bc.LABELS[best]} did. ")
+           + ("It was also correct most often. " if most_correct == "ours" else "It tied for the most correct answers. "
+              if most_correct == "tie" else
+              f"{bc.LABELS[most_correct].capitalize()} was correct more often: part of what this system avoids in hallucinations it "
+              "gives up in declined answers. ")
+           + f"It used about {a['ours']['tokens']:,} tokens per answer against {a['plain']['tokens']:,} and {a['rag']['tokens']:,}: "
+           "verification costs tokens and time, and this is its price.", ""]
+    hard = [lv for lv in sm["ours"]["level"] if lv in ("3", "4", "5", "A", "C")]
+    parts = []
+    for lv in hard:
+        o, p, r = (sm[k]["level"][lv] for k in bc.SYSTEMS)
+        parts.append(f"{LEVEL_NAMES.get(lv, lv)}: {o['hallucinated']} / {p['hallucinated']} / {r['hallucinated']} hallucinated of {o['n']}")
+    if parts:
+        out += ["Where the difference shows, by level (this system / plain / RAG): " + "; ".join(parts) + ". One run on a hand-written set: "
+                "a difference of one or two questions per level is within run-to-run variation.", ""]
+    return out
+
+
 def meaning() -> list[str]:
     """The results in plain language: what each number shows, what it does not show, and what follows from it. Built from the
     data of this run, so it only says what was measured."""
     L: list[str] = []
     sf, e2e, ab, lv, tx = DATA.get("safety"), DATA.get("e2e"), DATA.get("ablation"), DATA.get("live"), DATA.get("taxonomy")
+    L += compare_meaning(DATA.get("compare"))
 
     L += ["**How strong is each kind of evidence?** Three kinds of result appear below, and they should not be read the same way.",
           "- **Deterministic controls** (tripwire, write gate, redaction, leak check, abuse controls): fixed rules tested on fixed cases. "
@@ -870,17 +1156,31 @@ def meaning() -> list[str]:
               "invariance check. Whatever it misses is left to the data rule (every model call is told to treat text as data) and to "
               "verification, which is why the real-model attacks below matter more than this table.", ""]
     if e2e:
-        att = [r for r in e2e["rows"] if r["injection"] or r["id"] in ("e2e-02", "e2e-03", "e2e-04", "e2e-08")]
-        ctl = [r for r in e2e["rows"] if r not in att]
+        att = [r for r in e2e["rows"] if not is_control(r)]
+        ctl = [r for r in e2e["rows"] if is_control(r)]
         steered = [r["id"] for r in e2e["rows"] if r["steered"]]
         bad = [r["id"] for r in att if not r["passed"]]
-        L += [f"**Attacks through the real pipeline.** {len(att) - len(bad)} of {len(att)} attacks ended as specified (the injected text did not "
+        L += [f"**Attacks through the real pipeline (development cases).** {len(att) - len(bad)} of {len(att)} attacks ended as specified (the injected text did not "
               f"reach the answer, the prompt did not leak, private data was not stored)"
               + (f"; the ones that did not: {', '.join(bad)}" if bad else "")
               + f". Controls without any attack: {sum(r['passed'] for r in ctl)}/{len(ctl)}. "
               + (f"The invariance check found that the instructions changed the result in {', '.join(steered)} and answered the plain "
                  "question instead. " if steered else "The invariance check did not need to step in. ")
-              + "A passing attack case means that attack failed; it does not bound what a cleverer attacker could do.", ""]
+              + "These are the cases the mechanisms were developed and fixed against, so a good result here is partly by construction. "
+              "A passing attack case means that attack failed; it does not bound what a cleverer attacker could do.", ""]
+    eh = DATA.get("e2e_holdout")
+    if eh:
+        att_h = [r for r in eh["rows"] if not is_control(r)]
+        ctl_h = [r for r in eh["rows"] if is_control(r)]
+        bad_h = [r["id"] for r in att_h if not r["passed"]]
+        missed = [r for r in att_h if not r["injection"]]
+        L += [f"**Generalisation: held-out attacks.** These {len(att_h)} attacks and {len(ctl_h)} controls were written after the fixes and before any result was seen, "
+              f"and nothing was tuned on them. {len(att_h) - len(bad_h)} of {len(att_h)} attacks ended as specified"
+              + (f" (not: {', '.join(bad_h)})" if bad_h else "") + f"; controls {sum(r['passed'] for r in ctl_h)}/{len(ctl_h)}. The tripwire did not recognise "
+              f"{len(missed)} of the {len(att_h)} attacks, and "
+              + (f"{sum(r['passed'] for r in missed)} of those still ended as specified, which is the evidence that the defences behind the tripwire "
+                 "(the data rule and verification) hold on their own." if missed else "so the other defences were not tested alone.")
+              + " With this few cases, one miss moves the percentage a lot; treat the result as direction, not a rate.", ""]
     if ab:
         by = {}
         for r in ab["rows"]:
@@ -910,7 +1210,13 @@ def meaning() -> list[str]:
         src = Counter(k for r in lv for k, v in r["sources"].items() for _ in range(v))
         low = [r["q"] for r in lv if r["confidence"] == "low"]
         mem = [r["q"] for r in lv if r["memory"]]
-        L += [f"**Layered evidence on real questions.** {sum(r['ok'] for r in lv)} of {len(lv)} questions ended as specified. Claims were confirmed by: "
+        dev = [r for r in lv if r.get("set", "development") == "development"]
+        ho = [r for r in lv if r.get("set") == "held-out"]
+        L += [f"**Layered evidence on real questions.** {sum(r['ok'] for r in dev)} of {len(dev)} development questions"
+              + (f" and {sum(r['ok'] for r in ho)} of {len(ho)} held-out questions (written after the fixes, never tuned on)" if ho else "")
+              + " ended as specified. "
+              + ("The held-out figure is the fairer one: the development questions are the ones the system was improved against. " if ho else "")
+              + "Claims were confirmed by: "
               + (", ".join(f"{k} ({v})" for k, v in src.most_common()) or "nothing") + ". "
               "Where a source is the graph or Wikidata the confirmation is strong. Where it is *web* the claim was checked against quotes that "
               "occur word for word on a page the app fetched itself, which is stronger than trusting the model's account of what it read. "
@@ -1009,7 +1315,10 @@ def metrics(data: dict) -> dict[str, str]:
         m["Abuse controls as specified"] = f"{sum(r[3] == OK for r in data['abuse'])}/{len(data['abuse'])}"
     e = data.get("e2e")
     if e:
-        m["Real attacks ended as specified"] = f"{e['passed']}/{e['n']}"
+        m["Real attacks ended as specified (development cases)"] = f"{e['passed']}/{e['n']}"
+    eh = data.get("e2e_holdout")
+    if eh:
+        m["Real attacks ended as specified (held-out cases, never tuned on)"] = f"{eh['passed']}/{eh['n']}"
     ab = data.get("ablation")
     if ab:
         rows = ab["rows"]
@@ -1020,7 +1329,11 @@ def metrics(data: dict) -> dict[str, str]:
             f"{sum(r['answered'] for r in full)}/{len(full)} / {sum(r['answered'] for r in no_inv)}/{len(no_inv)}")
     lv = data.get("live")
     if lv:
-        m["Live questions as specified"] = f"{sum(r['ok'] for r in lv)}/{len(lv)}"
+        dev = [r for r in lv if r.get("set", "development") == "development"]
+        ho = [r for r in lv if r.get("set") == "held-out"]
+        m["Live questions as specified (development)"] = f"{sum(r['ok'] for r in dev)}/{len(dev)}"
+        if ho:
+            m["Live questions as specified (held-out, never tuned on)"] = f"{sum(r['ok'] for r in ho)}/{len(ho)}"
     ty = [r for r in data.get("types", []) if "error" not in r]
     if ty:
         n = len(ty)
@@ -1030,6 +1343,18 @@ def metrics(data: dict) -> dict[str, str]:
     if tx:
         mod = tx.get("model")
         m["Taxonomy, held-out: keyword fallback / model"] = f"{pct(tx['fallback']['accuracy'])} / {pct(mod['accuracy']) if mod else '-'}"
+    ru = [r for r in data.get("reuse", []) if not r.get("error")]
+    if ru:
+        a, b = sum(r["tokens_alone"] for r in ru), sum(r["tokens_reused"] for r in ru)
+        m["Reuse: tokens on the second of a similar pair, with / without reuse"] = f"{b:,} / {a:,} ({pct(1 - b / a) if a else '-'} saved)"
+    cmp_ = data.get("compare")
+    if cmp_:
+        from . import bench_compare as bc
+
+        for k in bc.SYSTEMS:
+            c = cmp_["summary"][k]["all"]
+            m[f"Head-to-head ({cmp_.get('set', 'comparison')}), {bc.LABELS[k]}: correct / declined / hallucinated"] = \
+                f"{c['correct']} / {c['declined']} / {c['hallucinated']} of {c['n']}"
     if data.get("tests"):
         cnt = Counter(x["outcome"] for x in data["tests"])
         m["Scripted tests: passed / failed / skipped"] = f"{cnt['PASSED']} / {cnt['FAILED'] + cnt['ERROR']} / {cnt['SKIPPED'] + cnt['XFAIL']}"
@@ -1064,6 +1389,12 @@ def write_index() -> None:
            for v in vs}
     names = list(dict.fromkeys(k for v in vs for k in per[v]))
     lines += table(["measure"] + [f"v{v}" for v in vs], [[n] + [per[v].get(n, "-") for v in vs] for n in names])
+    failed = sorted({p.name.split(".")[0] for p in (REPORTS / "failed").glob("*.md")}) if (REPORTS / "failed").exists() else []
+    if failed:
+        lines += ["", "## Runs that did not count", "",
+                  "These runs finished but are **not versions**, because they recorded errors instead of results (for example the model API "
+                  "could not be reached). They are kept in `failed/` for the record and are left out of the comparison above.", ""]
+        lines += [f"- [{n}](failed/{n}.md)" for n in failed]
     (REPORTS / "INDEX.md").write_text(safety.mask_secrets("\n".join(lines)), encoding="utf-8")
 
 
@@ -1087,9 +1418,10 @@ def render(sections: list[tuple[str, Section]], started: float, done: bool, vers
     if f:
         out += ["## What was measured for each mechanism", ""] + table(["mechanism", "what it does", "measured"], f)
     out += ["## What these results mean", ""] + meaning()
-    order = [("safety", "Part A. AI safety"), ("abuse", None), ("e2e", None), ("ablation", None),
-             ("live", "Part B. Verification approaches"), ("taxonomy", None), ("types", None),
-             ("tests", "Part C. Logic tests and engineering checks"), ("frontend", None), ("audit", None), ("bench", None), ("setup", "Appendix")]
+    order = [("compare", "Part A. Compared with a plain model and typical RAG"),
+             ("safety", "Part B. AI safety"), ("abuse", None), ("e2e", None), ("ablation", None),
+             ("live", "Part C. Verification approaches"), ("reuse", None), ("taxonomy", None), ("types", None),
+             ("tests", "Part D. Logic tests and engineering checks"), ("frontend", None), ("audit", None), ("bench", None), ("setup", "Appendix")]
     for key, part in order:
         if key not in by:
             continue
@@ -1111,10 +1443,12 @@ TITLE_KEY = {   # section title -> key, to read an existing report.md back
     "Hallucination types: classification, tier and handling": "types",
     "Verification approaches on real questions, question by question": "live", "Knowledge graph audit": "audit",
     "Benchmark (plain model vs this system)": "bench",
+    "This system against a plain model and typical RAG, question by question": "compare",
+    "Compression and reuse: tokens on repeated and similar questions": "reuse",
 }
 
 
-KEY_ORDER = ["setup", "safety", "abuse", "e2e", "ablation", "tests", "frontend", "taxonomy", "types", "live", "audit", "bench"]
+KEY_ORDER = ["compare", "setup", "safety", "abuse", "e2e", "ablation", "tests", "frontend", "taxonomy", "types", "live", "reuse", "audit", "bench"]
 
 
 def load_base(path: Path) -> dict[str, "Section"]:
@@ -1141,8 +1475,10 @@ def load_base(path: Path) -> dict[str, "Section"]:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--quick", action="store_true", help="no model calls")
-    ap.add_argument("--only", help="comma list of sections: setup, safety, abuse, e2e, ablation, tests, frontend, taxonomy, types, live, audit, bench")
+    ap.add_argument("--only", help="comma list of sections: setup, safety, abuse, e2e, ablation, tests, frontend, taxonomy, types, live, audit, "
+                                   "bench, compare")
     ap.add_argument("--bench", type=int, metavar="N", help="also run the benchmark on the first N items of each set")
+    ap.add_argument("--compare-set", default="comparison", help="question set for the compare section (a file in bench_data/)")
     ap.add_argument("--aura-tests", action="store_true")
     ap.add_argument("--label", default="", help="a short name for this version, shown in reports/INDEX.md")
     ap.add_argument("--notes", default="", help="what changed since the last version, or what this run found")
@@ -1163,10 +1499,19 @@ def main(argv=None) -> int:
             ("tests", lambda: tests_section(args.aura_tests)), ("frontend", frontend_section),
             ("taxonomy", lambda: taxonomy_section(args.quick)), ("types", lambda: types_section(args.quick)),
             ("live", lambda: live_section(args.quick)),
-            ("audit", audit_section), ("bench", lambda: benchmark_section(args.bench))]
+            ("audit", audit_section), ("bench", lambda: benchmark_section(args.bench)),
+            ("compare", lambda: compare_section(args.quick, args.compare_set)),
+            ("reuse", lambda: reuse_section(args.quick))]
     if args.only:
         want = {w.strip().lower() for w in args.only.split(",")}
         plan = [(n, f) for n, f in plan if n in want]
+    if not args.quick and any(n in MODEL_SECTIONS for n, _ in plan):
+        ok, why = model_reachable()
+        if not ok:   # refuse before anything is written: an invalid run must not become a version or overwrite report.md
+            print(f"The model API cannot be reached ({why}), and the sections asked for need it.\n"
+                  "Nothing was run and no version was saved. Check the network (try another connection or a VPN), then run again; "
+                  "or use --quick for the sections that need no model.")
+            return 2
     done: list[tuple[str, Section]] = []
     started = time.time()
     out = Path(args.out)
@@ -1205,6 +1550,11 @@ def main(argv=None) -> int:
     print(f"Latest copy: {out}" + (f"\nThis run is saved as version {version}: {REPORTS / f'report-v{version}.md'}" if save else
                                     "\n(scratch run: no version is saved)") + "\n")
     for name, fn in plan:
+        if not args.quick and name in MODEL_SECTIONS and not model_reachable()[0]:   # it went down while the report was running
+            write(False)
+            print(f"The model API became unreachable before '{name}'. The report stops here and is saved as UNFINISHED, so it is not "
+                  "mistaken for a result. Run again when the connection is back.")
+            return 2
         print(f"==> {name}", flush=True)
         t = time.time()
         try:

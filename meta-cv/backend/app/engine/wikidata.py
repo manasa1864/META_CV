@@ -44,6 +44,11 @@ PROPERTIES: dict[str, tuple[tuple[str, ...], str, bool]] = {
     "won": (("P166",), "item", False),
     "genre": (("P136",), "item", False),
 }
+# Relations whose Wikidata list is normally complete (who wrote, directed, founded it; whom someone married; what a
+# country's capital is). A stored value missing from that list is "disputed": not proven wrong, as a missing co-author
+# could be, but not something to serve as verified. Relations like located_in, won or genre are open-ended and excluded.
+COMPLETE_LISTS = {"written_by", "directed_by", "founded_by", "capital_of", "headquartered_in", "marries", "married_to",
+                  "spouse_of"}
 REVERSED = {"ceo_of": ("P169", "item")}  # (person, ceo_of, org): look up the org's P169 for the person
 
 _http: httpx.Client | None = None
@@ -157,7 +162,28 @@ def check(subject: str, relation: str, obj: str) -> dict:
             if hit:
                 return {"verdict": "supported", "qid": qid, "value": hit,
                         "reason": f"Wikidata {qid} ({label}) gives {hit}"}
-        qid, label = items[0]  # Wikidata ranks the best-known item with this exact name first
+        if relation in COMPLETE_LISTS:
+            # A name is often shared (the play "Hamlet" ranks below a village called a hamlet). Look at every item
+            # labelled with it: the stored value is "disputed" only if none of their lists has it. A wrong guess here only
+            # sends the claim for a fresh check; it never replaces an answer.
+            named = [(q, lb) for q, lb in items[:7] if normalize(lb) == normalize(holder)]
+            found = []
+            for q, lb in named:
+                vals = _values(q, props, kind)
+                if any(_match(kind, wanted, names) for _, names in vals):
+                    return {"verdict": "supported", "qid": q, "value": wanted,
+                            "reason": f"Wikidata {q} ({lb}) lists {normalize(wanted)}"}
+                found += [(v, q, lb) for v, _ in vals]
+            if found:
+                shown = sorted({v for v, _, _ in found})
+                return {"verdict": "disputed", "qid": found[0][1], "values": shown,
+                        "reason": f"Wikidata {found[0][1]} ({found[0][2]}) lists {', '.join(shown)}, not {normalize(wanted)}"}
+        # Wikidata ranks the best-known item first. It may contradict only if that item is itself labelled with the
+        # name: when an alias-only entry (a joke or fictional namesake) ranks first, the name is ambiguous and
+        # Wikidata stays silent rather than "contradict" the right answer.
+        qid, label = items[0]
+        if normalize(label) != normalize(holder):
+            return _unknown(f"'{normalize(holder)}' is ambiguous on Wikidata (the best match is '{label}'), so it cannot contradict")
         values = _values(qid, props, kind)
         if exclusive and values:
             shown = sorted({v for v, _ in values})

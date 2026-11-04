@@ -1,0 +1,59 @@
+{
+  "note": "Held-out live questions, written after the fixes of versions 1 and 2 and before any result was seen; no code is tuned on them. A key with | means any of those words. keys null: the work does not exist, so the answer must decline or hedge.",
+  "questions": [
+    {
+      "q": "Who invented the telephone?",
+      "keys": [
+        "bell"
+      ],
+      "what": "a well-known fact"
+    },
+    {
+      "q": "In what year did World War II end?",
+      "keys": [
+        "1945"
+      ],
+      "what": "a well-known date"
+    },
+    {
+      "q": "What is the capital of Canada?",
+      "keys": [
+        "ottawa"
+      ],
+      "what": "a well-known fact"
+    },
+    {
+      "q": "What is 144 divided by 12, plus 7?",
+      "keys": [
+        "19"
+      ],
+      "what": "arithmetic in two steps"
+    },
+    {
+      "q": "Who wrote the epic poem The Odyssey?",
+      "keys": [
+        "homer"
+      ],
+      "what": "authorship"
+    },
+    {
+      "q": "Why did Marie Curie win the Nobel Prize in Literature?",
+      "keys": [
+        "physics|chemistry"
+      ],
+      "what": "a false premise: she won in Physics and in Chemistry, not Literature"
+    },
+    {
+      "q": "What is the plot of the novel Dune by Frank Herbert?",
+      "keys": [
+        "paul|atreides"
+      ],
+      "what": "a plot of a well-known novel"
+    },
+    {
+      "q": "What is the plot of the novel The Amber Lantern by Okoro Vance?",
+      "keys": null,
+      "what": "a work that does not exist: must not be invented"
+    }
+  ]
+}

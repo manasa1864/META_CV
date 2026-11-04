@@ -20,7 +20,7 @@ import time
 from .. import config, llm, meter, safety
 from ..db import connect
 from ..graph_common import GraphLimitError, GraphUnavailable, ReadOnlyGraph
-from . import cache, factual, guardrails, invariance, memory, planner, reasoning, router, states
+from . import cache, explain, factual, guardrails, invariance, memory, planner, reasoning, router, states
 from .health import health
 from .router import caught
 from .trace import Trace
@@ -107,6 +107,15 @@ def _false_premise(r: dict, result: dict) -> dict | None:
             "caught": result["caught"] + [caught("factual.overclaim", "factual", "corrected", f"false premise: {detail}")]}
 
 
+class _Reroute(Exception):
+    """Raised inside _solve when the router's profile shows an injection the pattern tripwire missed: _guarded then answers
+    the question under the injection checks, re-using this profile (no second classification)."""
+
+    def __init__(self, profile: dict, weight: float):
+        super().__init__("semantic injection flag")
+        self.profile, self.weight = profile, weight
+
+
 def _solve(store, question: str, mode: str, conversation_id: str | None, force_tier: str | None, reuse: bool,
            flags: dict, meter_: dict, trace: Trace):
     reasoning_mode = None if mode == "auto" else mode
@@ -123,11 +132,19 @@ def _solve(store, question: str, mode: str, conversation_id: str | None, force_t
         if hit:
             return {**hit, "route": None}
 
+    asked = question
+    question = yield from memory.rewrite(question, hist, trace)   # "where was she born?" -> "where was Jane Austen born?"
     ev = trace.start("router", "Classifying the hallucination risk and choosing a tier")
     yield ev
-    r = router.route(question, memory.history_text(hist, question), force_tier)
+    r = router.route(question, memory.history_text(hist, question), force_tier, profile=meter_.pop("profile", None))
+    inj = r.get("injection_risk") or 0
+    if config.SEMANTIC_TRIPWIRE and inj >= config.INJECTION_RISK_FLAG and not meter_.get("injection"):
+        yield trace.settle(ev, "warn", _route_detail(r), tier=r["tier"])
+        raise _Reroute({k: v for k, v in r.items() if k not in ("tier", "scores", "evidence", "learned", "forced", "frozen")}, inj)
     if flags.get("static_router") and not force_tier:
         r = {**r, "tier": router.SPECIALIST[r["type"]], "learned": False}
+    meter_["false_premise"] = bool(r.get("false_premise_suspected"))
+    meter_["logic_risk"] = max((x["weight"] for x in r.get("risks", []) if x.get("label") == "faithful.logic"), default=0)   # factual._draft_and_check tells the drafter
     yield trace.settle(ev, "ok", _route_detail(r), tier=r["tier"])
 
     from .. import audit  # noqa: PLC0415  (audit imports the stores; keep the engine import-light)
@@ -145,6 +162,7 @@ def _solve(store, question: str, mode: str, conversation_id: str | None, force_t
             return {**hit, "route": r}
 
     tier, q, result = r["tier"], question, None
+    question = asked   # what was asked is what is cached and logged; q (possibly rewritten) is what is answered
     if flags.get("no_verification"):
         result = yield from _unverified(question, "reasoning" if tier == "reasoning" else "factual",
                                         reasoning_mode or "balanced", trace)
@@ -163,15 +181,16 @@ def _solve(store, question: str, mode: str, conversation_id: str | None, force_t
         prior = states.find(tier, q) if reuse and not current else None
         mixed = r["needs"]["facts"] and r["needs"]["calculation"] and bool(r["entities"]) and not force_tier
         if mixed:
-            result = yield from planner.answer(store, q, r["entities"], reasoning_mode or "balanced", trace, prior,
+            result = yield from planner.answer(store, q, r["entities"], reasoning_mode or "auto", trace, prior,
                                                memory.claims(hist), memory.answers(hist), verified_only, current)
         elif tier == "factual":
             result = yield from factual.answer(store, q, r["entities"], trace, prior, memory.claims(hist), verified_only,
                                                current)
         else:
-            result = yield from reasoning.answer(q, reasoning_mode or "balanced", trace, prior, memory.answers(hist))
+            result = yield from reasoning.answer(q, reasoning_mode or "auto", trace, prior, memory.answers(hist))
 
     result = _false_premise(r, result) or result
+    result = (yield from _explain_fallback(r, q, hist, result, meter_, trace)) or result
     cacheable = result.pop("cacheable") and reuse and r["type"] != "consistency" and q == question \
         and not result.get("stopped") and not current and not safety.tainted(result)
     tokens = meter_["prompt"] + meter_["completion"]
@@ -182,6 +201,24 @@ def _solve(store, question: str, mode: str, conversation_id: str | None, force_t
         yield trace.note("cache", "Saved this verified path for reuse")
     return {**result, "hallucination_type": r["type"], "route": r, "standalone": q if q != question else None,
             "reused_state": {"question": prior["question"], "similarity": prior["similarity"]} if prior else None}
+
+
+EXPLAINABLE_STOPS = ("nothing_verified", "premise_unverified", "insufficient", "budget_parts")
+
+
+def _explain_fallback(r: dict, q: str, hist: list[dict], result: dict, meter_: dict, trace: Trace):
+    """Generator: an open-ended question the verifying tiers declined goes to the explain tier (engine/explain.py). Never for
+    what the decline exists to stop: an unfound work or plot, a suspected false premise, a high risk of an invented detail,
+    or a question flagged as an injection attempt. Returns the new result, or None to keep the decline."""
+    stop = (result.get("stopped") or {}).get("reason")
+    fabrication = max((x["weight"] for x in r.get("risks", []) if x.get("label") == "factual.fabrication"), default=0)
+    if not (config.EXPLAIN_TIER and r.get("open_ended") and stop in EXPLAINABLE_STOPS) or r.get("false_premise_suspected") \
+            or fabrication >= 0.5 or meter_.get("injection"):
+        return None
+    out = yield from explain.answer(q, memory.history_text(hist, q), trace, (result.get("stopped") or {}).get("detail") or stop)
+    if not out:
+        return None
+    return {**out, "caught": result.get("caught", []) + out["caught"], "plan": [result["tier"], "explain"]}
 
 
 def _adversarial(result: dict) -> dict:
@@ -197,11 +234,19 @@ def _guarded(store, question: str, mode: str, conversation_id: str | None, force
     """_solve, with the checks for a question the injection tripwire flags: no caching, the learned
     adversarial policy (normal or verified-only), and the instruction-invariance check."""
     signals = safety.injection_signals(question)
+    semantic = None
     if not signals:
-        return (yield from _solve(store, question, mode, conversation_id, force_tier, reuse, flags, meter_, trace))
+        try:
+            return (yield from _solve(store, question, mode, conversation_id, force_tier, reuse, flags, meter_, trace))
+        except _Reroute as e:   # no known pattern, but the classifier reads the question as an injection attempt
+            semantic = e.weight
+            signals = ["semantic"]
+            meter_["profile"] = e.profile
     meter_["injection"] = signals
     plain_flags = flags   # the plain question (instructions removed) is not under the verified-only policy: see below
-    detail = (f"Patterns: {', '.join(signals)}. It is handled as a question to answer: the model is told to treat it "
+    how = (f"No known pattern matched, but the classifier rates it {semantic:.2f} for an injection attempt (a paraphrased "
+           "instruction)" if semantic is not None else f"Patterns: {', '.join(signals)}")
+    detail = (f"{how}. It is handled as a question to answer: the model is told to treat it "
               "as data, every claim is still verified, and nothing from it is cached.")
     if config.ADVERSARIAL_ROUTING and not flags.get("verified_only") and not flags.get("no_adversarial_routing"):
         pol = router.adversarial_policy()
@@ -219,6 +264,8 @@ def _guarded(store, question: str, mode: str, conversation_id: str | None, force
         return _adversarial(result)
 
     clean = invariance.strip(question)
+    if semantic is not None and clean == question.strip():   # nothing to cut by pattern: let the model delete the instruction
+        clean = invariance.strip_semantic(question)
     if not clean:
         yield trace.note("safety", "Invariance check skipped", "Nothing is left once the instructions are removed.", "info")
         return _adversarial(result)
@@ -326,6 +373,19 @@ def run(store, question: str, mode: str = "auto", typing_delay: float = 0.015, c
             result = yield from meter.metered(
                 _guarded(store, question, mode, conversation_id, force_tier, reuse, flags, meter_, trace), meter_)
             result = yield from _leak_check(result, trace)
+        except llm.LLMBadOutput:   # a step the model would not answer in the expected form (often a refusal in prose)
+            yield trace.note("factual", "The model would not answer this in a checkable form",
+                             "A step returned prose instead of the structure the checks need, so nothing could be verified.", "warn")
+            result = {**_stop(None, "nothing_verified", "the model's reply could not be checked",
+                              "I couldn't produce a verified answer to this, so I'd rather not guess."),
+                      "hallucination_type": "factual", "route": None}
+        except llm.LLMRefused:   # the provider's content policy blocked a call: decline, the safe answer, instead of an error
+            yield trace.note("safety", "The model provider refused this request",
+                             "Its content policy blocked the request, so it is declined.", "warn")
+            result = {**_stop(None, "refused", "the model provider's content policy blocked the request",
+                              "I can't help with that request. If you're working on something legitimate, such as securing "
+                              "your own system, I can explain the general ideas or point you to defensive resources."),
+                      "hallucination_type": "factual", "route": None}
         except meter.BudgetExceeded as e:
             yield trace.note("budget", "Per-question budget used up", str(e), "fail")
             result = {**_stop(None, "budget", str(e), "This question needed more work than one answer is allowed "

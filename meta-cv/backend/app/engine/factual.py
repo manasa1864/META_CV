@@ -58,6 +58,11 @@ Rules:
 - No opinions or speculation. At most 12 nodes.
 Return only JSON: {"claims": [{"subject": "...", "relation": "...", "object": "...", "depends_on": []}]}"""
 
+# Added to the drafting request when the classifier suspects the question rests on a false assumption. Naming the correct
+# fact as a claim lets it be verified and shown, instead of the answer only saying the assumption "could not be verified".
+PREMISE_HINT = ("Note: this question may rest on a false assumption. If it does, include the correct fact (the right name, year or "
+                "value) as a claim, so that it can be verified and the answer can correct the assumption.")
+
 JUDGE_SYSTEM = """Judge whether ONE claim is true in the real world. Someone else wrote it; do not assume it is right.
 Return only JSON: {"verdict": "true" | "false" | "unsure", "confidence": 0.0}"""
 
@@ -209,6 +214,71 @@ def _check_conflicts(store, node: dict, checked: list[dict], earlier: list[dict]
     return node
 
 
+def _crosscheck_wanted(c: dict) -> bool:
+    return config.GRAPH_CROSSCHECK and wikidata.enabled() and wikidata.covers(c["relation"])
+
+
+def _apply_crosscheck(c: dict, evidence: dict) -> dict:
+    """A stored fact against what Wikidata says. Agreement keeps it (and notes the second source); a contradiction
+    means the graph is not to be trusted here: Wikidata's single value replaces it, several values drop it, and the
+    stored fact goes to the review queue. Anything else (Wikidata silent or unreachable) leaves the graph answer."""
+    if evidence["verdict"] == "supported":
+        return {**c, "crosschecked": "wikidata", "reason": f"{c.get('reason', '')}; Wikidata agrees: {evidence['reason']}"}
+    if evidence["verdict"] == "disputed":   # a complete list that lacks the stored value: not served as verified
+        safety.count("graph_conflicts")
+        _queue_for_review(c, f"stored value not in Wikidata's list: {evidence['reason']}")
+        return {**c, "status": "unverified", "source": "graph-disputed",
+                "reason": f"the graph stores {c['object']!r} but {evidence['reason']}"}
+    if evidence["verdict"] != "contradicted":
+        return c
+    safety.count("graph_conflicts")
+    _queue_for_review(c, f"stored value contradicted by Wikidata: {evidence['reason']}")
+    if len(evidence["values"]) == 1:
+        return {**c, "object": normalize(evidence["values"][0]), "status": "accepted", "source": "wikidata-corrected",
+                "reason": f"the graph stores {c['object']!r} but {evidence['reason']}", "original_object": c["object"],
+                "qid": evidence["qid"]}
+    return {**c, "status": "rejected", "source": "graph-conflict",
+            "reason": f"the graph and Wikidata disagree: {evidence['reason']}"}
+
+
+def crosscheck_answered(answered: list[dict], parts: list[dict], trace: Trace):
+    """Generator: the parts answered straight from the graph, each checked against Wikidata at the same time.
+    Returns (answered with any contradicted fact corrected or dropped, indexes of parts to hand back to the model).
+    A disputed fact is taken out and its part reopened, so it is drafted and verified like any part the graph lacks;
+    so is any later part that was built on its value."""
+    wanted = [i for i, n in enumerate(answered) if n.get("source") == "graph" and _crosscheck_wanted(n)]
+    if not wanted:
+        return answered, []
+    ev = trace.start("factual", "Checking the stored answers against an independent source",
+                     f"{len(wanted)} stored fact(s) looked up on Wikidata")
+    yield ev
+    futures = {i: parallel.submit(wikidata.check, answered[i]["subject"], answered[i]["relation"], answered[i]["object"])
+               for i in wanted}
+    out, conflicts, reopened = list(answered), [], set()
+    for i, f in futures.items():
+        out[i] = _apply_crosscheck(answered[i], f.result())
+        if out[i]["source"] != "graph":
+            conflicts.append(out[i])
+        if out[i]["source"] in ("graph-disputed", "graph-conflict"):
+            reopened.add(out[i]["part"])
+    grew = True
+    while grew:   # a later part built on a reopened part's answer ("#n") no longer has a verified starting point
+        grew = False
+        for k, p in enumerate(parts):
+            if k not in reopened and any(str(p[s]).startswith("#") and int(str(p[s])[1:]) - 1 in reopened
+                                         for s in ("subject", "object") if str(p[s])[1:].isdigit()):
+                reopened.add(k)
+                grew = True
+    out = [n for n in out if n.get("part") not in reopened]
+    if conflicts:
+        yield trace.settle(ev, "warn", "Wikidata disagrees with the graph on " + "; ".join(
+            f"{c['subject']} {c['relation']} ({c['reason']})" for c in conflicts)
+            + ". The graph value is not served as verified and is queued for review.")
+    else:
+        yield trace.settle(ev, "ok", "No stored answer is contradicted by Wikidata.")
+    return out, sorted(reopened)
+
+
 def _stored_values(store, subject: str, relation: str) -> list[str]:
     s = store.resolve(subject) if hasattr(store, "resolve") else subject
     return sorted({f["object"] for f in store.facts_about(subject) if f["subject"] == s and f["relation"] == relation})
@@ -277,10 +347,18 @@ def verify_node(store, c: dict, trace: Trace, label: str, verified_only: bool = 
 
     if v["verdict"] == "supported":
         how = " via " + " -> ".join(v["path"]) if v.get("path") else ""
-        yield trace.settle(ev, "ok", f"Graph supports it ({v['reason']}{how}). Moving to the next node.")
-        return {**c, "status": "accepted", "source": "graph", "reason": v["reason"]}
-
-    if v["verdict"] == "contradicted":
+        node = {**c, "status": "accepted", "source": "graph", "reason": v["reason"]}
+        if _crosscheck_wanted(c):
+            node = _apply_crosscheck(node, wikidata.check(c["subject"], c["relation"], c["object"]))
+            if node["source"] == "graph-disputed":   # keep checking it as if the graph had been silent
+                yield trace.note("factual", f"{label}: stored value disputed", f"{node['reason']}. Checked like any other claim.", "warn")
+            elif node["source"] != "graph":
+                yield trace.settle(ev, "warn", f"Graph supports it, but {node['reason']}. Not served as verified.")
+                return node
+        if node["source"] == "graph":
+            yield trace.settle(ev, "ok", f"Graph supports it ({v['reason']}{how}). Moving to the next node.")
+            return node
+    elif v["verdict"] == "contradicted":
         stored = _stored_values(store, c["subject"], c["relation"])
         if len(stored) == 1:
             fixed = {**c, "object": stored[0]}
@@ -402,7 +480,7 @@ def _caught_by_checks(checked: list[dict]) -> list[dict]:
         if c["source"] in ("graph-corrected", "wikidata-corrected"):
             out.append(caught("factual.entity_error", "factual", "corrected",
                               f"{c['subject']} {c['relation']} {c['original_object']} -> {c['object']} ({c['reason']})"))
-        elif c["status"] == "rejected" and c["source"] in ("graph", "model", "wikidata", "web"):
+        elif c["status"] == "rejected" and c["source"] in ("graph", "graph-conflict", "model", "wikidata", "web"):
             out.append(caught("factual.entity_error", "factual", "dropped", f"{_fmt(c)}: {c['reason']}"))
         elif c["status"] == "rejected" and c["source"] == "types":
             out.append(caught("factual.relation_error", "factual", "dropped", f"{_fmt(c)}: {c['reason']}"))
@@ -455,6 +533,8 @@ def walk(store, question: str, entities: list[str], trace: Trace, prior: dict | 
         parts = yield from decompose.plan(store, question, entities, trace)
         if parts:
             answered, open_parts = yield from decompose.fill(store, parts, trace)
+            answered, reopened = yield from crosscheck_answered(answered, parts, trace)
+            open_parts = sorted(set(open_parts) | set(reopened))
     notes: dict[int, str] = {}
     plots_open = [k for k in open_parts if _is_plot_part(parts[k])]
     if plots_open:
@@ -595,6 +675,7 @@ def _draft_and_check(store, question: str, shown: list[dict], relations: list[st
     claims = _parse_claims(llm.chat_json(
         DRAFT_SYSTEM, f"KNOWN FACTS:\n{known_txt}\n\nRelations in use: {relations}\n\nQuestion: {question}"
         + (f"\n\n{focus}" if focus else "")
+        + (f"\n\n{PREMISE_HINT}" if (meter.current() or {}).get("false_premise") else "")
     ))
     yield trace.settle(ev, "ok" if claims else "fail", f"{len(claims)} node(s) to verify, in order")
 

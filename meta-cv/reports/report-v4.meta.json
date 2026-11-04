@@ -1,0 +1,23 @@
+{
+ "version": 4,
+ "date": "2026-11-03 19:40",
+ "commit": "73083b9 (uncommitted changes)",
+ "mode": "full",
+ "only": [
+  "e2e",
+  "ablation",
+  "tests",
+  "types",
+  "live"
+ ],
+ "based_on": 2,
+ "label": "General improvements plus held-out cases",
+ "notes": "Three general improvements (an unreachable graph with no snapshot now degrades to answering without stored facts instead of failing the question; a suspected false premise tells the drafter to state the correct fact; the report retries network errors and starts each section from clean state so one section's cache cannot leak into the next) and, to check for overfitting, new held-out cases written before any result was seen and never tuned on: 13 attack cases (10 attacks, 3 controls) and 8 live questions. Development and held-out results are reported separately.",
+ "sections_run": [
+  "e2e",
+  "ablation",
+  "tests",
+  "types",
+  "live"
+ ]
+}

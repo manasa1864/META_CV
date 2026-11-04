@@ -73,7 +73,7 @@ def test_wikidata_supports_contradicts_or_stays_silent(wiki):
     assert bad["verdict"] == "contradicted" and bad["values"] == ["Steventon"] and bad["qid"] == "Q1"
     assert wikidata.check("jane austen", "birth_year", "1797")["values"] == ["1775"]
     assert wikidata.check("jane austen", "born_in", "ventnor")["verdict"] == "contradicted"
-    assert wikidata.check("pride and prejudice", "written_by", "austen")["verdict"] == "unknown"     # no loose matches
+    assert wikidata.check("pride and prejudice", "written_by", "austen")["verdict"] == "disputed"   # no loose matches (a short name is re-drafted in full)
     assert wikidata.check("pride and prejudice", "published_in", "1820")["verdict"] == "unknown"     # not exclusive
     assert wikidata.check("nobody known", "born_in", "x")["verdict"] == "unknown"
     assert wikidata.check("jane austen", "defends", "x")["reason"].startswith("Wikidata lookup not used")
@@ -144,3 +144,127 @@ def test_a_separate_judge_model_does_the_independent_checks(monkeypatch):
     monkeypatch.setattr(config, "META_JUDGE_MODEL", "")
     llm.judge_json("s", "u")
     assert seen[-1] == "drafter" and not llm.judge_configured()
+
+
+# The graph is evidence, not an oracle: a stored value Wikidata contradicts is not served as verified.
+
+def _stored_wrong(value="bath"):
+    s = SqliteGraphStore()
+    s.define_relation("born_in", functional=False)
+    s.add_fact("jane austen", "born_in", value, "poison")
+    return s
+
+
+def test_a_stored_part_answer_that_wikidata_contradicts_is_corrected(fake_llm, wiki):
+    PLAN = "Split the question into the facts it asks for"
+    fake_llm.on(ROUTER, lambda u, t: {"type": "factual", "entities": ["jane austen"]})
+    fake_llm.on(PLAN, lambda u, t: {"parts": [{"subject": "jane austen", "relation": "born_in", "object": "?"}]})
+    fake_llm.on(COMPOSE, lambda u, t: "Jane Austen was born in Steventon.")
+    f = final(run(_stored_wrong(), "Where was Jane Austen born?"))
+    (node,) = f["path"]
+    assert node["source"] == "wikidata-corrected" and node["object"] == "steventon" and node["original_object"] == "bath"
+    with connect() as conn:
+        row = conn.execute("SELECT reason FROM review_queue WHERE object='bath'").fetchone()
+    assert row and "contradicted by Wikidata" in row["reason"]   # the bad stored fact goes to a human
+
+
+def test_a_drafted_claim_the_graph_supports_is_still_checked_against_wikidata(fake_llm, wiki):
+    _route(fake_llm, [{"subject": "jane austen", "relation": "born_in", "object": "bath"}], judge="true")
+    f = final(run(_stored_wrong(), "Where was Jane Austen born?"))
+    (node,) = f["path"]
+    assert node["source"] == "wikidata-corrected" and node["object"] == "steventon"
+
+
+def test_a_stored_fact_wikidata_agrees_with_is_kept_and_says_so(fake_llm, wiki):
+    _route(fake_llm, [{"subject": "jane austen", "relation": "born_in", "object": "steventon"}])
+    f = final(run(_stored_wrong("steventon"), "Where was Jane Austen born?"))
+    (node,) = f["path"]
+    assert node["source"] == "graph" and node["crosschecked"] == "wikidata"
+
+
+def test_the_graph_crosscheck_can_be_turned_off(fake_llm, wiki, monkeypatch):
+    monkeypatch.setattr(config, "GRAPH_CROSSCHECK", False)
+    _route(fake_llm, [{"subject": "jane austen", "relation": "born_in", "object": "bath"}])
+    (node,) = final(run(_stored_wrong(), "Where was Jane Austen born?"))["path"]
+    assert node["source"] == "graph" and node["object"] == "bath"
+
+
+def test_wikidata_being_silent_leaves_the_stored_answer_alone(fake_llm, wiki):
+    s = SqliteGraphStore()
+    s.add_fact("jane austen", "defends", "the navy")
+    _route(fake_llm, [{"subject": "jane austen", "relation": "defends", "object": "the navy"}])
+    (node,) = final(run(s, "Whom did Jane Austen defend?"))["path"]
+    assert node["source"] == "graph"
+
+
+def test_an_item_that_only_lists_the_name_as_an_alias_cannot_contradict(monkeypatch, wiki):
+    """Napoleon XIV (an alias 'Napoleon Bonaparte', born in New York City) ranked first and 'contradicted' the true
+    birthplace; only an item labelled with the name may do that."""
+    monkeypatch.setitem(ITEMS, "Q50", {"label": "Napoleon XIV", "aliases": ["Napoleon Bonaparte"], "claims": {"P19": ["Q51"]}})
+    monkeypatch.setitem(ITEMS, "Q51", {"label": "New York City", "aliases": [], "claims": {}})
+    monkeypatch.setitem(ITEMS, "Q52", {"label": "Napoleon Bonaparte", "aliases": [], "claims": {}})
+
+    def api(request):
+        q = request.url.params
+        if q["action"] == "wbsearchentities" and q["search"].lower() == "napoleon bonaparte":
+            return httpx.Response(200, json={"search": [
+                {"id": "Q50", "label": "Napoleon XIV", "match": {"text": "Napoleon Bonaparte"}},
+                {"id": "Q52", "label": "Napoleon Bonaparte", "match": {"text": "Napoleon Bonaparte"}}]})
+        return _api(request)
+
+    monkeypatch.setattr(wikidata, "_http", httpx.Client(transport=httpx.MockTransport(api)))
+    wikidata._search.cache_clear()
+    r = wikidata.check("napoleon bonaparte", "born_in", "ajaccio")
+    assert r["verdict"] == "unknown"
+
+
+def test_a_stored_author_missing_from_wikidatas_list_is_reopened_and_redrafted(fake_llm, wiki):
+    """Authors are multi-valued, so Wikidata cannot call a stored author 'wrong' - but it can say the list lacks him,
+    and the stored value is then not served as verified: the part goes back to the drafter and is checked."""
+    PLAN = "Split the question into the facts it asks for"
+    s = SqliteGraphStore()
+    s.add_fact("pride and prejudice", "written_by", "charlotte bronte", "poison")
+    fake_llm.on(ROUTER, lambda u, t: {"type": "factual", "entities": ["pride and prejudice"]})
+    fake_llm.on(PLAN, lambda u, t: {"parts": [{"subject": "pride and prejudice", "relation": "written_by", "object": "?"}]})
+    fake_llm.on(DRAFT, lambda u, t: {"claims": [{"subject": "pride and prejudice", "relation": "written_by", "object": "jane austen"}]})
+    fake_llm.on(JUDGE, lambda u, t: {"verdict": "unsure", "confidence": 0.1})
+    fake_llm.on(PROBE, lambda u, t: {"answers": []})
+    fake_llm.on(COMPOSE, lambda u, t: "Jane Austen wrote Pride and Prejudice.")
+    f = final(run(s, "Who wrote Pride and Prejudice?"))
+    nodes = [(n["object"], n["source"]) for n in f["path"] if n["status"] == "accepted"]
+    assert ("jane austen", "wikidata") in nodes and all(o != "charlotte bronte" for o, _ in nodes)
+    with connect() as conn:
+        row = conn.execute("SELECT reason FROM review_queue WHERE object='charlotte bronte'").fetchone()
+    assert row and "not in Wikidata's list" in row["reason"]
+
+
+def test_a_stored_author_on_wikidatas_list_is_kept(fake_llm, wiki):
+    s = SqliteGraphStore()
+    s.add_fact("pride and prejudice", "written_by", "jane austen", "seed")
+    _route(fake_llm, [{"subject": "pride and prejudice", "relation": "written_by", "object": "jane austen"}])
+    (node,) = final(run(s, "Who wrote Pride and Prejudice?"))["path"]
+    assert node["source"] == "graph" and node["crosschecked"] == "wikidata"
+
+
+def test_open_ended_relations_are_never_disputed():
+    assert "located_in" not in wikidata.COMPLETE_LISTS and "won" not in wikidata.COMPLETE_LISTS
+
+
+def test_a_shared_name_is_checked_against_every_item_that_carries_it(monkeypatch, wiki):
+    """'Hamlet' is a village first and a play second. A stored author is disputed only if no item's list has it."""
+    monkeypatch.setitem(ITEMS, "Q70", {"label": "Hamlet", "aliases": [], "claims": {}})
+    monkeypatch.setitem(ITEMS, "Q71", {"label": "Hamlet", "aliases": [], "claims": {"P50": ["Q72"]}})
+    monkeypatch.setitem(ITEMS, "Q72", {"label": "William Shakespeare", "aliases": [], "claims": {}})
+
+    def api(request):
+        q = request.url.params
+        if q["action"] == "wbsearchentities" and q["search"].lower() == "hamlet":
+            return httpx.Response(200, json={"search": [{"id": i, "label": "Hamlet", "match": {"text": "Hamlet"}} for i in ("Q70", "Q71")]})
+        return _api(request)
+
+    monkeypatch.setattr(wikidata, "_http", httpx.Client(transport=httpx.MockTransport(api)))
+    wikidata._search.cache_clear()
+    wikidata._claims.cache_clear()
+    bad = wikidata.check("hamlet", "written_by", "christopher marlowe")
+    assert bad["verdict"] == "disputed" and bad["values"] == ["William Shakespeare"]
+    assert wikidata.check("hamlet", "written_by", "william shakespeare")["verdict"] == "supported"

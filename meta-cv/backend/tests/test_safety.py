@@ -496,3 +496,13 @@ def test_results_and_replays_endpoints(tmp_path, monkeypatch):
         assert client.get("/replays").json()[0]["id"] == "false-premise"
         assert client.get("/replays/false-premise").json()["question"] == "q"
         assert client.get("/replays/..%2Fsecret").status_code == 404
+
+
+def test_with_no_snapshot_a_question_is_answered_without_stored_facts_instead_of_failing(tmp_path):
+    def down():
+        raise GraphUnavailable("paused")
+
+    store = ResilientStore(down, str(tmp_path / "missing.db"))
+    assert store.degraded == "graph_snapshot" and store.facts_about("jane austen") == []   # empty and read-only, not an exception
+    with pytest.raises(ReadOnlyGraph):
+        store.add_fact("a", "likes", "b")

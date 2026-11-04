@@ -1,6 +1,9 @@
 # META CV
 
 An adaptive chatbot that tries to prevent hallucinations by design.
+
+**Final evaluation:** [FINAL_REPORT.md](meta-cv/FINAL_REPORT.md) has the measured results, pros and cons, and the comparison with a plain model and typical RAG. Run-by-run reports are in [reports/](meta-cv/reports/INDEX.md).
+
 - **Risk profile:** each question gets a profile of the hallucinations it is at risk of.
 - **Routing:** it goes to the tier that can verify those risks.
 - **Checking:** nothing is said until it has been checked, and the system stops instead of guessing when it cannot verify.
@@ -435,7 +438,7 @@ Each turn records what the checks saw in `turns.safety`. Refusals that never bec
 | `python -m app.preflight [--seed] [--url https://...]` | pre-demo PASS/FAIL checks |
 | `npx playwright test` (in `frontend/`) | browser smoke test against the scripted demo |
 
-Deployment, judge mode and the AuraDB pausing plan are in [docs/DEPLOY.md](docs/DEPLOY.md).
+Deployment, judge mode and the AuraDB pausing plan are in [docs/DEPLOY.md](meta-cv/docs/DEPLOY.md).
 
 ## Limitations
 

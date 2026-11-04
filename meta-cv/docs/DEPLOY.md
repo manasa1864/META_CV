@@ -27,6 +27,8 @@ container sets `META_NO_HOME_ENV=1` so nothing reads `~/.meta_cv/.env`.
 | `DB_PATH` | path on a persistent volume if the host has one (default `/data/meta.db`) |
 | `PORT` | the port the host expects (Hugging Face Spaces: `7860`) |
 | `META_JUDGE_MODEL` | optional: a different model for the independent checks, so the drafter does not check itself (`META_JUDGE_BASE_URL` / `META_JUDGE_API_KEY` if it is on another API) |
+| `TAVILY_API_KEY` | optional: Tavily search API key for a second web search (new and niche pages, JavaScript pages); off when empty. `TAVILY_DEPTH` basic or advanced |
+| `GRAPH_CROSSCHECK` | optional: `0` stops checking graph-supplied facts against Wikidata (on by default; needs `WIKIDATA_LOOKUP`) |
 | `WIKIDATA_LOOKUP` | optional: `0` turns off the Wikidata evidence lookup (on by default; needs outbound HTTPS to wikidata.org) |
 | `WIKIPEDIA_LOOKUP` | optional: `0` turns off reading plots from Wikipedia for works the graph has no events for (on by default; needs outbound HTTPS to en.wikipedia.org) |
 | `MAX_TOKENS`, `MAX_LLM_CALLS` | per-question budget (150000 tokens, 40 calls). A question that exceeds it stops with a clear message instead of guessing. A web search alone can use 13-25k tokens |

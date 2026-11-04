@@ -1,0 +1,17 @@
+{
+ "version": 10,
+ "date": "2026-11-04 22:01",
+ "commit": "73083b9 (uncommitted changes)",
+ "mode": "full",
+ "only": [
+  "compare",
+  "reuse"
+ ],
+ "based_on": 9,
+ "label": "Explain tier, refusals handled, reuse measured",
+ "notes": "Two fixes after version 9: open-ended questions (designs, explanations) that the verifying tiers declined now get an answer written by the model with every calculation machine-checked and labelled unverified; a provider content-policy block is answered as a refusal instead of crashing. The owner's 20-question set is run again head to head, and a new section measures the tokens saved by reuse (cache and intermediate compression) on five pairs of repeated or similar questions. Other sections are kept from version 9.",
+ "sections_run": [
+  "compare",
+  "reuse"
+ ]
+}

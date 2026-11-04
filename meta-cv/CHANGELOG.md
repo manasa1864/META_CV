@@ -5,6 +5,124 @@ Numbers here are measured. Anything that needs the real model, or a real AuraDB 
 
 ## 2026-11-03
 
+### Found by version 10
+- **A model reply in prose crashed a question** ("How can someone gain access to an account..."): the drafter expected JSON and
+  got a refusal in prose. `llm.LLMBadOutput` reaching the pipeline is now answered as a decline (`nothing_verified`), not an
+  internal error. Made after the v10 run; not re-measured.
+- **Reuse measured (v10):** 51% fewer tokens on the second question of five pairs; 100% on exact repeats, 45% on a reworded fact,
+  but 8% and 28% more on new-number calculations, where adapting stored steps adds a logic check that the relaxed reasoning
+  level does not need.
+
+### Found by the owner's 20-question set (version 9): open-ended questions, provider refusals, reuse
+- **Open-ended questions were declined.** A network design, "how does supernetting work" or "explain authentication" has no
+  single fact to verify, so the verifying tiers accepted nothing and stopped. A new explain tier (`engine/explain.py`) takes such a
+  question when the router marks it `open_ended` and a verifying tier declined it: the model writes the answer with every
+  calculation marked, each is machine-checked (a wrong result is corrected in the text and lowers confidence), and the answer is
+  labelled as the model's explanation, not verified against sources (medium confidence at most). It is never used for an unfound
+  work or plot, a suspected false premise, a high fabrication risk, or a question flagged as an injection. `EXPLAIN_TIER=0` keeps
+  the decline.
+- **A provider content-policy block crashed the answer** ("internal error"). It is now `llm.LLMRefused`, answered as a refusal
+  (stop reason `refused`), which is the safe outcome.
+- **Reuse is measured.** A new report section (`--only reuse`) answers five pairs of repeated or similar questions, the second
+  with and without reuse, and shows the tokens saved by the verified-path cache and the intermediate compression. Every other
+  section runs with reuse off.
+
+### Tavily as a second web search
+- `TAVILY_API_KEY` (off when empty) adds Tavily's search API to the web evidence pool (`engine/tavily.py`), run at the same time
+  as the model's own search. Its pages join the pool. A quote now counts if it occurs word for word in the page the app fetched
+  or in the text Tavily extracted from that page, which reaches pages that build their text with JavaScript. Sentences of
+  Tavily's snippets join the pool as quotes marked `via: tavily`; they are page text, not model output, and still need both
+  names of a claim and the independent judge to count. Sentences with instruction-like text are dropped. If the model's search
+  is unavailable, Tavily alone keeps the pool working. The key is sent only to api.tavily.com in the Authorization header and is
+  masked in logs and reports. Cost: Tavily credits (basic depth, 1 per question that needs web evidence), not model tokens.
+- `.env` now lists every setting `.env.example` does, with the same values as the built-in defaults, so nothing changed.
+
+### Follow-ups keep their context; paraphrased injections are caught by meaning
+- **Found by the head-to-head run (version 8):** follow-ups such as "In what year was that man assassinated?" and "What
+  percentage of my original $200 have I spent?" were declined. They were only rewritten when the router picked the
+  consistency tier; otherwise they were answered as asked, without knowing who "that man" was or what had been spent.
+- **Fix:** with conversation history, a follow-up that refers back (he, she, that, it, the total, original, left...) is
+  rewritten as a standalone question before routing. The rewrite may only re-use names and numbers that the follow-up or
+  the conversation contains; one that adds any, or carries instruction-like text, is rejected and the follow-up is kept as
+  asked. One small model call per such follow-up. `FOLLOWUP_REWRITE=0` turns it off.
+- **Meaning-based injection tripwire:** the router's classification now also rates `adversarial.injection` (an instruction
+  addressed to the assistant, however worded). A question rated `INJECTION_RISK_FLAG` (0.6) or more is handled as if the
+  pattern tripwire had fired: injection checks, nothing cached, a warning shown, and the invariance check. This costs no extra
+  call, because the classification already happens. With no pattern to cut out, the model is asked to delete the instruction for
+  the invariance re-run, and its output must be a shortened copy of the question (it may delete, never add).
+  `SEMANTIC_TRIPWIRE=0` turns it off. The score never changes the tier.
+- **Not measured yet** on the real model: how many paraphrases this catches and how many harmless questions it flags. The
+  pattern-tripwire figures in the report (0 of 6 paraphrases) measure the pattern list only.
+
+### Head-to-head comparison with a plain model and typical RAG
+- New `python -m app.report --only compare` (also `python -m app.bench_compare`): the same 84 questions
+  (`bench_data/comparison.json`: one fact, two linked facts, 20 calculations from one to five steps, false premises, invented
+  or future things, attacks, and seven 3-4 turn follow-up conversations) go to this system, a plain model and a typical RAG
+  chatbot (Wikipedia search, top 3 article leads in the prompt, no checking), all on the same model and key. Each answer is
+  graded correct / declined / hallucinated by the same keyword rule. The report shows totals, results by difficulty and by
+  hallucination type, how far the reasoning ladder climbed on each calculation, each conversation turn by turn, where this
+  system loses and where it wins, and every answer. The baselines (`app/baselines.py`) do not get this system's data rule.
+- The solver is told to write each calculation as stated (17*23, not 17*20 + 17*3): the split added numbers the question
+  does not contain, which number tracing then flagged, costing a backtrack and a climb. 17 x 23 now takes 2,352 tokens at
+  the relaxed level, against 7,256 at fixed balanced.
+
+### Reasoning levels are now automatic: start relaxed, get strict only when needed
+- **Before:** "auto" meant balanced for every calculation; aggressive / balanced / conservative applied only when picked by hand.
+- **Now:** "auto" (the default) climbs a ladder. It starts at aggressive (one solution, every arithmetic step machine-checked
+  and every number traced to the question: the fewest tokens) and climbs to balanced (a second independent solution and a
+  logic check), then conservative (up to five solutions that must strongly agree), only when the checks give a reason: the
+  solution failed a check or needed a backtrack, has more than `SIMPLE_SOLUTION_STEPS` (2) steps, builds on facts verified
+  elsewhere, says it lacks a fact, or independent solutions disagree. Starting at balanced for a high
+  router logic-risk weight (`LOGIC_RISK_STRICT_START`) is off by default: on the real model every calculation, even 17 x 23,
+  got a high weight and skipped the relaxed level, so the weight says what kind of question it is, not how hard. If even conservative cannot agree, the answer is
+  given at low confidence with a warning, or declined, never loosened. Each climb, its reason and the tokens spent so far are
+  shown in the trace; the answer records the level it ended at. A mode picked by hand is used as is.
+- **Not measured yet** on the real model: how many tokens this saves and whether accuracy holds. The comparison run measures it.
+
+### Version 7: version 6 showed the author/director check often looked at the wrong item
+- **Found by version 6:** Hamlet (Marlowe) and Inception (Spielberg) were still served. Wikidata's best match for "hamlet" is a village
+  and for "inception" is the concept "date of establishment", so the best match had no author or director to compare with.
+- **Fix, general:** for the complete-list relations, every item carrying the name (up to seven results) is consulted. The stored
+  value is "supported" if any list has it and "disputed" only if none does. A wrong guess only sends the claim for a fresh
+  check; it never replaces an answer. Hamlet/Marlowe and Microsoft/Jobs are now disputed; Hamlet/Shakespeare, Microsoft/Gates and
+  Frankenstein/Shelley are supported (checked by hand).
+- **Version 6 also changed three cases that have nothing to do with relations** (e2e-08, ho-e2e-05, ho-e2e-10 declined or answered
+  incompletely). The cross-check does not touch them; the cause looks like run-to-run variation in the model, and they were repeated
+  to see.
+- **Overfitting:** Inception moved to the development set (e2e-16). Five new held-out cases (ho-e2e-25 to 29) were written before the
+  change and were not looked up on Wikidata beforehand.
+
+### Version 6: a control from version 5 showed the new check could overwrite a true fact
+- **Found by version 5's held-out set:** with a correct stored fact (Napoleon born in Ajaccio), the Wikidata cross-check answered "New
+  York City". Wikidata's best match for "napoleon bonaparte" was a joke entry that only lists that name as an alias. The check
+  was new in version 5 and caused this; it was worse than the problem it fixed for this case.
+- **Fix, general:** Wikidata may now contradict a claim only when its best-ranked match is itself labelled with the name. When an
+  alias-only entry ranks first the name is ambiguous and Wikidata stays silent. This also protects model-claim checks.
+- **Overfitting:** ho-e2e-17 moved to the development set (e2e-14) because it was seen; two new controls (ho-e2e-19, ho-e2e-20) were
+  written before this fix was run. Known remaining limit: a common name whose true person is labelled differently ("Napoleon")
+  gets no cross-check at all, which means the stored value is trusted, as before version 5.
+
+- **Also in version 6: stored values missing from a complete Wikidata list.** For relations whose list is normally complete (author,
+  director, founder, capital, headquarters, spouse), a stored value that is not on Wikidata's list is "disputed". It is not
+  called wrong (a missing co-author could be real), but it is no longer served as verified: the part is handed back to the
+  drafter and verified from scratch, and the stored fact goes to review. Open-ended relations (located_in, won, genre) are
+  never disputed. Seen case ho-e2e-18 moved to development (e2e-15); ho-e2e-21 to 24 are new and unseen.
+
+### Version 5: the graph is checked, not obeyed
+- **Found by version 4's held-out set:** a wrong value stored in the graph (a poisoned or mistaken fact) was served as "verified"
+  because anything the graph supplied skipped every independent check. "Where was Marie Curie born?" was answered "Paris".
+  Version 4's development poisoned-fact case had passed, so the earlier fixes had not generalised to this one.
+- **Fix, general and not specific to that case:** a fact the graph supplies is now also looked up on Wikidata when Wikidata records
+  that relation (`GRAPH_CROSSCHECK=0` turns it off). Agreement is noted; a contradiction replaces the value with Wikidata's
+  single value (or drops it if there are several) and queues the stored fact for review. It applies to parts answered straight
+  from the graph and to drafted claims the graph supports.
+- **Limit, stated:** Wikidata can only contradict single-valued relations (birth/death place and year). For relations with several
+  valid values (authors, awards) it cannot say a stored value is wrong, so a poisoned author is still served. Case ho-e2e-18
+  measures exactly that.
+- **Overfitting:** ho-e2e-09 failed in version 4, so it moved to the development set (e2e-13) because it was seen. Five new
+  held-out cases (ho-e2e-14 to 18: three other poisoned facts, one correct stored fact as a control, one outside the fix) were written
+  before the fix was run.
+
 ### Found by the first full report run
 - **The per-question token budget was too small for web search.** "Why did Einstein win the Nobel Prize in 1905?" used 76,185 tokens
   and stopped at the 60,000 limit, though it answers correctly when it fits. `MAX_TOKENS` default is now 150,000. The live
@@ -30,6 +148,32 @@ Numbers here are measured. Anything that needs the real model, or a real AuraDB 
   layout, were overwritten before versioning existed.
 - **Untested at the time of writing:** this change was made without running anything, at the user's request. It is verified when the
   next run is made.
+
+### Version 3: general improvements, and held-out cases to check for overfitting
+- **The risk being addressed:** several fixes so far were made after the same cases failed that the report then re-tests, so an improvement
+  in a later version is partly by construction. Version 3 adds cases that were written **after** those fixes, **before any result was seen**,
+  and that no code is tuned on, and reports development and held-out results separately.
+- **Held-out sets:** `end_to_end_holdout` in `bench_data/safety_cases.json` (10 attacks and 3 controls, five of them worded so the tripwire does
+  not recognise them, so the other defences must hold alone) and `bench_data/live_holdout.json` (8 live questions, including a false
+  premise and a work that does not exist). The tripwire patterns were deliberately not changed for them.
+- **General improvements** (each justified by a failure mode, not by a test case):
+  - **Graph unreachable with no snapshot:** the app now answers without stored facts (read-only, `degraded`) instead of failing the question,
+    as one live question did when AuraDB timed out.
+  - **Suspected false premise:** the drafter is told to state the correct fact (the right name, year or value) as a claim, so it can be
+    verified and shown, instead of the answer only saying the assumption could not be verified.
+  - **Report harness:** network errors (graph or model unreachable) are retried instead of recorded as results, and each section starts from
+    clean state, so a claim cached by one section cannot answer a question in the next (a Hamlet claim had).
+- **Not changed on purpose:** the injection tripwire's patterns and the adversarial policy's prior. Paraphrases slipping past the tripwire is a
+  measured limit; the policy's measured benefit is still unproven (version 2's comparison showed attacks failing with it off).
+
+### A report must not be saved when the model cannot be reached
+- **What happened:** the first attempt at version 2 ran while `api.meta.ai` refused every connection from this machine
+  (`WinError 10061`; Wikipedia, Wikidata and AuraDB were fine). Every real-model case recorded `llm_unavailable`, and the run was saved as
+  version 2 and copied over `report.md`.
+- **Now:** the report checks that the model answers before it starts, and again before each model section. If it cannot be reached it
+  writes nothing and saves no version, or, if it goes down part-way, saves the run as unfinished.
+- **That invalid run** was moved to `reports/failed/` (listed in `reports/INDEX.md`, left out of the comparison), and `report.md` was
+  restored to version 1.
 
 ### Fixes made after version 1 (not yet in a saved version)
 - **Invariance check:** the plain question is no longer held to the verified-only policy. Before, it also verified nothing on an empty

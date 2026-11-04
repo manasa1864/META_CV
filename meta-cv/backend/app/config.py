@@ -68,6 +68,26 @@ META_JUDGE_API_KEY = _env("META_JUDGE_API_KEY")
 # Outside evidence for claims the graph does not hold (engine/wikidata.py). 0 turns the lookup off.
 WIKIDATA_LOOKUP = _env("WIKIDATA_LOOKUP", default="1") != "0"
 WIKIDATA_TIMEOUT = _num("WIKIDATA_TIMEOUT", 6)
+# A fact the graph supplies is also looked up on Wikidata (single-valued relations Wikidata records): the graph is
+# evidence, not an oracle, so a stored value that Wikidata contradicts is not served as verified. 0 trusts the graph.
+GRAPH_CROSSCHECK = _env("GRAPH_CROSSCHECK", default="1") != "0"
+# Reasoning mode "auto" climbs aggressive -> balanced -> conservative (engine/reasoning.py). A one-solution answer is
+# accepted at the relaxed level only with at most this many steps (and every check passed without a backtrack);
+# LOGIC_RISK_STRICT_START: a problem the router rates at least this high for faithful.logic starts at balanced. Off by
+# default (above 1): the real classifier gives every calculation a high logic weight, so the weight says what kind of
+# question it is, not how hard; the solution's own checks decide instead.
+SIMPLE_SOLUTION_STEPS = int(_num("SIMPLE_SOLUTION_STEPS", 2))
+# A second, meaning-based injection tripwire: the router's own risk profile (no extra model call). A question it rates at
+# least INJECTION_RISK_FLAG for adversarial.injection is handled like one the pattern tripwire caught. 0 turns it off.
+SEMANTIC_TRIPWIRE = _env("SEMANTIC_TRIPWIRE", default="1") != "0"
+INJECTION_RISK_FLAG = _num("INJECTION_RISK_FLAG", 0.6)
+# A follow-up that refers back ("where was she born?", "my original $200") is rewritten as a standalone question from the
+# conversation before it is routed (engine/memory.py). 0 turns it off.
+FOLLOWUP_REWRITE = _env("FOLLOWUP_REWRITE", default="1") != "0"
+# An open-ended question (a design, an explanation) the verifying tiers had to decline is answered by the model with every
+# calculation in it machine-checked, and labelled unverified (engine/explain.py). 0 keeps the decline.
+EXPLAIN_TIER = _env("EXPLAIN_TIER", default="1") != "0"
+LOGIC_RISK_STRICT_START = _num("LOGIC_RISK_STRICT_START", 1.1)
 # A plot the graph lacks is read from the work's Wikipedia article and checked against it (engine/wikipedia.py).
 # 0 turns it off; plot questions the graph cannot answer are then declined. Same timeout as Wikidata.
 WIKIPEDIA_LOOKUP = _env("WIKIPEDIA_LOOKUP", default="1") != "0"
@@ -77,6 +97,12 @@ WIKIPEDIA_LOOKUP = _env("WIKIPEDIA_LOOKUP", default="1") != "0"
 WEB_SEARCH = _flag("WEB_SEARCH", True)
 WEB_MAX_PAGES = _int("WEB_MAX_PAGES", 5)
 WEB_PAGE_TIMEOUT = _num("WEB_PAGE_TIMEOUT", 8)
+# Tavily search API (engine/tavily.py): a second web search for the evidence pool, with page text for pages the app cannot
+# read itself. Off unless the key is set. TAVILY_DEPTH: basic (1 credit per search) or advanced (2).
+TAVILY_API_KEY = _env("TAVILY_API_KEY")
+TAVILY_DEPTH = _env("TAVILY_DEPTH", default="basic")
+TAVILY_MAX_RESULTS = _int("TAVILY_MAX_RESULTS", 5)
+TAVILY_TIMEOUT = _num("TAVILY_TIMEOUT", 15)
 # When neither the graph nor Wikipedia has a work's plot, the model may say what it remembers of it, clearly labelled
 # unverified (low confidence, never cached). 0: such questions are declined instead.
 PLOT_MEMORY_FALLBACK = _flag("PLOT_MEMORY_FALLBACK", True)
