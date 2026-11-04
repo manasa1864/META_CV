@@ -28,25 +28,54 @@ All commands run from `meta-cv/backend` unless noted.
 
 ## Run it
 
-```powershell
-python -m venv .venv; .venv\Scripts\activate
-pip install -r requirements.txt
-copy .env.example .env               # fill in AuraDB + META_* (or keep a copy in ~/.meta_cv/.env)
-python -m app.seed                   # idempotent starter graph, through the write gate
-uvicorn app.main:app --port 8000 --reload
-# in frontend/:  npm install; npm run dev   -> http://localhost:5173
+**1. Get the code**
+
+```bash
+git clone https://github.com/manasa1864/META_CV.git
+cd META_CV/meta-cv
 ```
 
-**Keys in `backend/.env`** (gitignored; `.env.example` lists every setting with its default):
+**2. Set up the backend**
 
-| setting | needed | what it is for |
-|---|---|---|
-| `META_API_KEY`, `META_BASE_URL`, `META_MODEL` | yes | the Meta Model API (`https://api.meta.ai/v1`, `muse-spark-1.3`); also its built-in web search |
-| `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD` | with `GRAPH_BACKEND=neo4j` | the AuraDB graph |
-| `TAVILY_API_KEY` | optional | a second web search ([tavily.com](https://tavily.com)) for new and niche pages and pages built with JavaScript; off when empty; costs Tavily credits, 1 per question that needs web evidence |
-| `ADMIN_TOKEN` | for a public deployment | admin writes |
+```bash
+cd backend
+python -m venv .venv
+.venv\Scripts\activate            # Windows; on macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env               # Windows PowerShell: copy .env.example .env
+```
 
-Keys are masked in every log, report and answer.
+**3. Add your keys to `backend/.env`**
+
+- `META_API_KEY`: your Meta Model API key (required). `META_BASE_URL` and `META_MODEL` are already filled in.
+- `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`: your AuraDB credentials. No AuraDB? Set `GRAPH_BACKEND=sqlite` instead.
+- `TAVILY_API_KEY`: optional, from [tavily.com](https://tavily.com), for better web search on new books and pop culture.
+
+`.env` is gitignored, so your keys are never committed.
+
+**4. Start the backend** (in `backend/`, with the virtual environment active)
+
+```bash
+python -m app.seed                 # loads the starter facts into the graph (safe to run again)
+uvicorn app.main:app --port 8000 --reload
+```
+
+**5. Start the frontend** (in a second terminal)
+
+```bash
+cd META_CV/meta-cv/frontend
+npm install
+npm run dev
+```
+
+Open http://localhost:5173.
+
+**6. Optional: run the tests and the evaluation** (in `backend/`)
+
+```bash
+python -m pytest                   # all tests, no model or network needed
+python -m app.report               # the full evaluation, written to report.md and reports/
+```
 
 ### Production graph: Neo4j AuraDB
 
