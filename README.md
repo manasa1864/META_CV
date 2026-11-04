@@ -19,8 +19,7 @@ META/                        (the repository root)
     ├── bench_data/          benchmark and taxonomy question sets (JSON)
     ├── results/             measured benchmark / scale / taxonomy results (committed)
     ├── replays/             recorded real runs for Replay mode (committed)
-    ├── data/                deployment files: graph snapshot, initial state (generated, see docs/DEPLOY.md)
-    ├── docs/DEPLOY.md       deployment for judges
+    ├── data/                deployment files: graph snapshot, initial state (generated, see Deployment below)
     ├── Dockerfile           one container: frontend at /, API under /api
     └── demo_server.py       the pipeline with a scripted stand-in model, labelled "Scripted demo (no model)"
 ```
@@ -38,6 +37,17 @@ uvicorn app.main:app --port 8000 --reload
 # in frontend/:  npm install; npm run dev   -> http://localhost:5173
 ```
 
+**Keys in `backend/.env`** (gitignored; `.env.example` lists every setting with its default):
+
+| setting | needed | what it is for |
+|---|---|---|
+| `META_API_KEY`, `META_BASE_URL`, `META_MODEL` | yes | the Meta Model API (`https://api.meta.ai/v1`, `muse-spark-1.3`); also its built-in web search |
+| `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD` | with `GRAPH_BACKEND=neo4j` | the AuraDB graph |
+| `TAVILY_API_KEY` | optional | a second web search ([tavily.com](https://tavily.com)) for new and niche pages and pages built with JavaScript; off when empty; costs Tavily credits, 1 per question that needs web evidence |
+| `ADMIN_TOKEN` | for a public deployment | admin writes |
+
+Keys are masked in every log, report and answer.
+
 ### Production graph: Neo4j AuraDB
 
 Set `GRAPH_BACKEND=neo4j` and the `NEO4J_*` values from the Aura credentials file.
@@ -52,7 +62,9 @@ SQLite is also a full graph backend (`GRAPH_BACKEND=sqlite`), used for tests and
 
 ```
 question (+ conversation)
+  -> injection tripwires: patterns, then the router's meaning-based rating    safety.py, engine/pipeline.py
   -> exact-repeat cache (re-validated)                                       engine/cache.py
+  -> a follow-up that refers back is rewritten as a standalone question       engine/memory.py
   -> risk profile: weighted risk codes, needs {facts, calculation, history},
      false-premise and time-sensitive flags; keyword fallback if the model fails  engine/router.py
   -> learned router picks the tier                                           engine/router.py
@@ -60,15 +72,19 @@ question (+ conversation)
   -> tier
        factual      graph first: the question split into parts, each part the graph
                     can answer taken from the graph (every stored value); the rest
-                    drafted and verified node by node: graph, then judge + blind
-                    probe; unanswered parts reported                                  engine/decompose.py,
+                    drafted and verified node by node: graph (itself cross-checked
+                    on Wikidata), Wikidata, Wikipedia, web quotes (model search
+                    + Tavily), then judge + blind probe; unanswered parts reported   engine/decompose.py,
                                                                                       engine/factual.py
        reasoning    arithmetic machine-checked, every number traced to its source,
-                    logic checked, backtracking, independent solutions must agree    engine/reasoning.py
+                    logic checked, backtracking; the level climbs from one solution
+                    to cross-checked ones only when a check calls for it            engine/reasoning.py
        consistency  from what the conversation verified; derived numbers must pass
                     the arithmetic check and trace to the cited statements, or it
                     re-asks a standalone question                                     engine/memory.py
        mixed        facts first, then the calculation from those verified premises   engine/planner.py
+       explain      open-ended questions the tiers above declined: the model's
+                    answer, every calculation in it machine-checked, labelled       engine/explain.py
   -> faithfulness guard: names, numbers and claims in the answer must come
      from verified facts; regenerate once, else print the verified facts verbatim     engine/guardrails.py
   -> stop conditions, answer, and a `final` event with risks, caught, stopped,
@@ -332,6 +348,54 @@ Costs and limits:
   the part's (same name, or a shared word). The drafter is told to keep the part's relation names.
 - **Measure it:** `python -m app.bench --ablate full,no_graph_first`.
 
+### Stored facts are checked, not obeyed
+
+A fact the graph supplies is also looked up on Wikidata, for relations Wikidata records (`GRAPH_CROSSCHECK`, on by default):
+- **agreement** is noted on the claim;
+- **a contradiction** on a single-valued fact (birth or death place or year) replaces the stored value with Wikidata's and
+  queues the stored fact for review. Wikidata may contradict only when its best match is labelled with the exact name, so a
+  namesake or a joke entry cannot overwrite a true fact;
+- **a value missing from a complete list** (author, director, founder, capital, spouse) is "disputed": not called wrong, but
+  not served as verified either. The part goes back to be drafted and checked like any part the graph lacks. Every Wikidata item
+  sharing the name is consulted, because the best match is often something else (a village called a hamlet).
+
+Measured on held-out poisoned-fact cases: wrong stored birthplaces, years, places of death, authors and directors were corrected
+or declined, and correct stored facts were kept.
+
+### Web evidence from two searches
+
+With `TAVILY_API_KEY` set, Tavily searches at the same time as the model's own web search (`engine/tavily.py`). Its pages join
+the evidence pool, and a quote counts if it occurs word for word either in the page the app fetched or in the text Tavily
+extracted from that page. Sentences of Tavily's snippets join the pool as quotes; they are page text, not model output, and still
+need both names of a claim and the independent judge before they count. Instruction-like sentences are dropped. If either search
+fails, the other keeps working.
+
+### Reasoning levels climb automatically
+
+`auto` (the default) starts every calculation at the relaxed level: one solution, every arithmetic step machine-checked and every
+number traced. It climbs to balanced (a second independent solution and a logic check), then conservative (up to five solutions
+that must strongly agree), only when a check gives a reason:
+- a failed check, or a backtrack;
+- more than `SIMPLE_SOLUTION_STEPS` (2) steps;
+- a calculation built on facts checked elsewhere;
+- solutions that disagree.
+
+Each climb, its reason and the tokens spent so far are shown in the trace. If even conservative cannot agree, the answer is
+flagged or declined, never loosened. A level picked by hand is used as is. Measured: 17 x 23 is answered at the relaxed level
+for 2,352 tokens, against 7,256 at fixed balanced.
+
+### Follow-ups and open-ended questions
+
+- **Follow-ups** that refer back ("where was she born?", "my original $200") are rewritten into a standalone question before
+  routing (`memory.rewrite`). The rewrite may only reuse names and numbers the conversation contains; one that adds anything, or
+  carries instruction-like text, is rejected. `FOLLOWUP_REWRITE=0` turns it off.
+- **Open-ended questions** (a design, an explanation, a comparison) have no single fact to verify, so the verifying tiers used to
+  decline them. When the router marks a question `open_ended` and a verifying tier declined it, the explain tier
+  (`engine/explain.py`) lets the model write the answer with every calculation marked, machine-checks each one (a wrong result
+  is corrected and lowers confidence), and labels the rest as the model's explanation, not verified against sources. It is never
+  used for an unfound work or plot, a suspected false premise, a high fabrication risk or a flagged injection. `EXPLAIN_TIER=0`
+  keeps the decline.
+
 ### Number tracing
 
 The arithmetic check proves `expression = result`. It cannot see that `1921 - 1897 = 24` uses the wrong birth year.
@@ -366,6 +430,10 @@ Fewer tokens, with no check that catches a hallucination skipped (`engine/compre
 | reuse a verified calculation | a similar calculation adapts the verified steps in one solution | arithmetic machine-checked and logic-checked; if either fails, the full cross-check runs. Trade-off: the independent second solution is skipped |
 | exact repeat | the stored verified answer is reused at zero model calls | re-validated against the graph first |
 
+**Measured on the real model** (`python -m app.report --only reuse`, five pairs): 51% fewer tokens on the second question
+overall; 100% on exact repeats and 45% on a reworded fact, but 8% and 28% more on similar calculations with new numbers, where
+adapting the stored steps adds a logic check the relaxed reasoning level does not need.
+
 `tests/test_compression.py` counts the model calls each kind saves: two calls instead of four for a similar calculation in balanced mode, and no new claim chain for a similar fact question. Measure the token effect on real traffic with `python -m app.bench --ablate full,no_compression`. The Metrics tab reports average tokens per answer for each kind of reuse, and how often trimming had to be undone.
 
 ### Safety beyond hallucination
@@ -378,6 +446,8 @@ Fewer tokens, with no check that catches a hallucination skipped (`engine/compre
 | prompt leaks | an answer that repeats a clause of a system prompt is withheld (stop reason `unsafe_output`) |
 | private data | emails, phone numbers, card numbers (Luhn-checked), ID numbers and keys are redacted before a turn is stored. A question containing any is answered but never cached or reused. Chat turns are deleted after `TURNS_RETENTION_DAYS` (90) |
 | secrets | the configured keys and passwords are masked in every log record and in the answer stream |
+| paraphrased injection | the router's classification also rates `adversarial.injection`; a question rated `INJECTION_RISK_FLAG` (0.6) or more is handled as if the pattern tripwire had fired, at no extra model call. With no pattern to cut out, the model deletes the instruction for the invariance re-run, and its output must be a shortened copy of the question. `SEMANTIC_TRIPWIRE=0` turns it off |
+| provider refusals | when the model provider's content policy blocks a request, or the model answers in prose instead of the checkable form, the question is declined with a reason instead of failing with an error |
 | abuse | per-IP rate limit always on (30/min, 12 in judge mode), read from the trusted proxy's end of `X-Forwarded-For` so it cannot be dodged by sending a new header value. Questions are capped at 2000 characters. POST/DELETE requests from other sites' pages are refused. Without `ADMIN_TOKEN`, admin writes work only from the machine the app runs on. The production server sends anti-framing and no-sniff headers |
 
 #### Mechanisms built on the verified claims
@@ -408,7 +478,9 @@ router, the write gate), so they measure or limit an attack's *effect* instead o
 
 The instruction-invariance check, taint and adversarial routing are tested with a scripted model (`tests/test_safety_mechanisms.py`). How often real attacks steer the real model is what the end-to-end cases measure.
 
-With a model, it also runs four end-to-end attacks through the full pipeline (**not measured yet**). The Results page shows the latest run.
+With a model, it also runs attacks through the full pipeline. In the latest measured run every development and held-out case
+ended as specified (held-out 25/25), and no injected instruction reached an answer in any version; see
+[FINAL_REPORT.md](meta-cv/FINAL_REPORT.md).
 
 The Metrics tab has a live "Safety checks" card covering:
 - questions with instruction-like text or private data;
@@ -423,6 +495,9 @@ Each turn records what the checks saw in `turns.safety`. Refusals that never bec
 | command | what it does |
 |---|---|
 | `python -m app.report [--quick] [--only safety,live,...] [--bench N] [--aura-tests]` | **runs the evaluation and writes `report.md`, case by case** (no overall pass/fail): every AI-safety control with one row per case (injection, write gate, source trust campaign, redaction, prompt leaks, abuse controls), attacks through the real pipeline, each novel mechanism switched off in turn, the 12 live questions with every claim and what confirmed it, per-case classification, and every test by name. **Every run is kept as its own version** in `reports/` (`report-v1.md`, `report-v2.md`, ...; each with its raw data and a small metadata file), never overwritten, and `reports/INDEX.md` lists them with what changed and their headline numbers side by side. `report.md` is a copy of the latest. Use `--label` and `--notes` to name a run, `--only live,e2e` to rerun just some sections (the rest are kept from the latest finished version) and `--scratch` to try the report without saving a version. State goes to a throwaway database; `--quick` makes no model calls |
+| `python -m app.report --only compare [--compare-set comparison_hard]` | **head to head:** the same questions to this system, a plain model and a typical RAG chatbot (Wikipedia search, top 3 article leads, no checking), all on the same model and key; graded correct / declined / hallucinated by keywords or, for designs and refusals, by a rubric. Sets: `bench_data/comparison.json` (83 questions, 5 difficulty levels, attacks, 7 conversations) and `bench_data/comparison_hard.json` (20 harder ones) |
+| `python -m app.report --only reuse` | tokens saved by the cache and intermediate compression on five pairs of repeated or similar questions |
+| `python -m app.bench_compare [--set comparison_hard] [--limit 5]` | the head-to-head on its own, results in `results/` |
 | `python -m pytest` | all tests (AuraDB variants run when credentials exist; `NEO4J_TESTS=0` skips them) |
 | `python -m app.audit [--fail-on error]` | graph audit: functional violations, incompatible pairs, cycles, near-duplicates, provenance, staleness, relation drift, dangling caches |
 | `python -m app.recheck` | re-validate cached paths and reasoning states; drop expired claims; prune old state |
@@ -438,7 +513,101 @@ Each turn records what the checks saw in `turns.safety`. Refusals that never bec
 | `python -m app.preflight [--seed] [--url https://...]` | pre-demo PASS/FAIL checks |
 | `npx playwright test` (in `frontend/`) | browser smoke test against the scripted demo |
 
-Deployment, judge mode and the AuraDB pausing plan are in [docs/DEPLOY.md](meta-cv/docs/DEPLOY.md).
+Deployment, judge mode and the AuraDB pausing plan are in [Deployment](#deployment) below.
+
+## Deployment
+
+One container serves the built frontend at `/` and the API under `/api` (the same paths the Vite dev
+proxy uses), built by the multi-stage `Dockerfile`:
+
+```bash
+cd meta-cv
+docker build -t meta-cv .
+docker run -p 8000:8000 --env-file backend/.env -e JUDGE_MODE=1 -e ADMIN_TOKEN=... meta-cv
+```
+
+No host-specific files are in the repo yet. Pick a host from the table below first.
+
+### Environment variables
+
+All configuration comes from environment variables; the frontend never receives a secret, and the
+container sets `META_NO_HOME_ENV=1` so nothing reads `~/.meta_cv/.env`.
+
+| Variable | Value |
+|---|---|
+| `GRAPH_BACKEND` | `neo4j` |
+| `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`, `NEO4J_DATABASE` | from the Aura credentials file |
+| `META_API_KEY`, `META_BASE_URL`, `META_MODEL` | the model |
+| `JUDGE_MODE` | `1` - read-only graph, frozen router, per-IP rate limit, daily token budget |
+| `ADMIN_TOKEN` | long random string; write endpoints need header `X-Admin-Token`. Without it, writes work only from the machine the app runs on, so a deployment without a token is not writable by visitors |
+| `TRUSTED_PROXY_HOPS` | proxies in front of the app that append to `X-Forwarded-For` (default `1`, right for a typical host). The rate limit reads the client IP that many entries from the right, because the left end is whatever the client sent. `0` if the app is exposed directly |
+| `ALLOWED_ORIGINS` | other sites allowed to send POST/DELETE requests (default: the Vite dev server only). The app's own origin is always allowed |
+| `DB_PATH` | path on a persistent volume if the host has one (default `/data/meta.db`) |
+| `PORT` | the port the host expects (Hugging Face Spaces: `7860`) |
+| `META_JUDGE_MODEL` | optional: a different model for the independent checks, so the drafter does not check itself (`META_JUDGE_BASE_URL` / `META_JUDGE_API_KEY` if it is on another API) |
+| `TAVILY_API_KEY` | optional: Tavily search API key for a second web search (new and niche pages, JavaScript pages); off when empty. `TAVILY_DEPTH` basic or advanced |
+| `GRAPH_CROSSCHECK` | optional: `0` stops checking graph-supplied facts against Wikidata (on by default; needs `WIKIDATA_LOOKUP`) |
+| `WIKIDATA_LOOKUP` | optional: `0` turns off the Wikidata evidence lookup (on by default; needs outbound HTTPS to wikidata.org) |
+| `WIKIPEDIA_LOOKUP` | optional: `0` turns off reading plots from Wikipedia for works the graph has no events for (on by default; needs outbound HTTPS to en.wikipedia.org) |
+| `MAX_TOKENS`, `MAX_LLM_CALLS` | per-question budget (150000 tokens, 40 calls). A question that exceeds it stops with a clear message instead of guessing. A web search alone can use 13-25k tokens |
+| `WEB_SEARCH` | optional: `0` turns off the model API's web search as evidence (on by default; ~10-17 s and ~10k tokens per question that needs it, plus the search fee; the app also fetches the cited pages, so it needs outbound HTTPS). `WEB_MAX_PAGES` (5), `WEB_PAGE_TIMEOUT` (8) |
+| `PLOT_MEMORY_FALLBACK` | optional: `0` stops the model from telling what it remembers of a work's plot (labelled unverified, low confidence) when no source has it; such questions are declined instead |
+| `META_REASONING_EFFORT` | `low` or `minimal` for Muse Spark (default model effort is high: ~30 s per call). Empty for providers that reject the parameter |
+| `CHECK_WORKERS` | optional: model checks run at the same time (default `6`); lower it if the model API rate-limits, `1` checks one by one |
+| optional | `RATE_LIMIT_PER_MIN` (12 in judge mode, 30 otherwise; `0` = off), `MAX_QUESTION_CHARS` (2000), `DAILY_TOKEN_BUDGET` (2000000), `MAX_CONCURRENT` (8), `LLM_TIMEOUT` (90) |
+| `FOLLOWUP_REWRITE` | `1` (default) / `0`: rewrite follow-ups that refer back into a standalone question before routing |
+| `SEMANTIC_TRIPWIRE`, `INJECTION_RISK_FLAG` | `1` (default) / `0`, and `0.6`: treat a question the router rates this high for injection as if the pattern tripwire had fired |
+| `EXPLAIN_TIER` | `1` (default) / `0`: answer open-ended questions the verifying tiers declined, with every calculation machine-checked and the answer labelled |
+| `SIMPLE_SOLUTION_STEPS`, `LOGIC_RISK_STRICT_START` | `2`, `1.1` (off): the reasoning ladder accepts a one-solution answer of at most this many steps at the relaxed level; a router logic-risk weight at or above the second starts at balanced |
+| `INVARIANCE_CHECK`, `ADVERSARIAL_ROUTING` | `1` (default) / `0`: re-answer flagged questions without their instructions; learned normal-vs-verified-only policy for flagged questions |
+| `SOURCE_TRUST_MIN_FACTS`, `SOURCE_TRUST_FLOOR` | `3`, `0.5`: an untrusted source with at least this many checked facts and trust below the floor has its new facts sent to review |
+| `TURNS_RETENTION_DAYS` | chat turns are kept this long, with private data already redacted (default `90`; `0` keeps them). Benchmark turns are kept |
+
+### Where state lives
+
+- **Fact graph:** AuraDB.
+- **Everything else** (turns, router outcomes, caches, review queue, quarantine, rule proposals): SQLite at `DB_PATH`.
+  - **With a persistent volume:** mount it and point `DB_PATH` at it.
+  - **Without one:** the app starts from `data/initial_state.db` if that file is shipped, and every restart resets learning. Keep `JUDGE_MODE=1` (frozen router) so this is visible and harmless. Ship `data/initial_state.db` only from a real run: run the benchmark against a fresh `DB_PATH`, then copy that file.
+- **Benchmark results** (`results/`) and **recorded runs** (`replays/`) are committed files, so the results page and Replay mode work with no model and no graph.
+
+### Hosts (check current plans before choosing; they change)
+
+| Host | Builds this Dockerfile | Persistent disk | Notes |
+|---|---|---|---|
+| Render | yes | paid instances only | free instances sleep after inactivity (slow first request) |
+| Fly.io | yes | volumes | needs a card; machines can auto-stop/start |
+| Railway | yes | volumes | usage-based billing after the trial |
+| Hugging Face Spaces (Docker) | yes | paid add-on | set `PORT=7860`; free Spaces sleep when idle |
+
+### AuraDB Free: pausing and limits
+
+- **Pausing:** an idle free instance pauses after a few days, and can be deleted after a long pause.
+  - The app cannot resume it: resume it in the Aura console.
+  - Keep it awake with an external scheduler (for example a cron job or uptime monitor) calling `GET https://<host>/api/readyz` every 12 hours.
+- **If Aura is unreachable anyway:** the app answers read-only from `data/graph_snapshot.db`, and `/readyz` and the UI say "running on a local snapshot".
+  - Refresh the snapshot before deploying: `cd meta-cv/backend && python -m app.export_snapshot`.
+- **Plan limits:** the free tier caps nodes and relationships. Read the exact numbers in the console.
+  - A write that hits the limit fails with `graph_limit` and is never retried.
+  - `python -m app.scale` measures where the free tier stops being suitable.
+
+### Before the demo
+
+```bash
+cd meta-cv/backend
+python -m app.preflight --seed          # graph reachable, seed loaded, audit clean
+python -m app.record_replays            # real runs of the example questions, for Replay mode
+python -m app.export_snapshot           # read-only fallback copy of the graph
+# deploy, then:
+python -m app.preflight --url https://<host>
+```
+
+`preflight --url` checks:
+- `/healthz` and `/readyz` (graph reachable and not degraded);
+- that every example question returns a final answer;
+- that `/results` loads and `results/latest.json` parses;
+- that writes are blocked in judge mode;
+- that the audit is clean.
 
 ## Limitations
 
@@ -452,8 +621,9 @@ Deployment, judge mode and the AuraDB pausing plan are in [docs/DEPLOY.md](meta-
 - **The keyword fallback is a heuristic.** It is only used when the model's classification fails.
   - It scores 88% on a held-out set written after its rules were frozen (98% on the set it was developed against).
   - Its known misses are listed in `tests/test_fallback.py`.
-- **Reusing a verified calculation skips the independent second solution.** That is the price of its token saving; the adapted solution is still machine-checked and logic-checked.
-- **The injection tripwire is a list of patterns.** Paraphrased attacks get past it (0/6 in the red-team cases). Whether the model itself resists them is measured only by the end-to-end cases, which need the model.
+- **Reusing a verified calculation skips the independent second solution,** and since the automatic reasoning ladder made fresh solving cheap, adapting stored steps measured 8% to 28% more tokens on simple sums. The adapted solution is still machine-checked and logic-checked.
+- **The pattern tripwire misses rewording** (0/6 paraphrases in the red-team cases). The meaning-based tripwire is meant to catch those, but its real-model catch rate and false-alarm rate are not measured yet.
+- **It costs more and declines more than a plain chatbot.** Head to head on the same model, a plain model was correct on 82 of 83 questions and this system on 73, at 12 to 28 times the tokens and about 8 times the time; the gap is mostly declines when it cannot verify. On a strong model there is little hallucination left to catch; the design pays off where a wrong answer costs more than no answer.
 - **No harmful-content filter:** the app decides how to answer a question, not whether it should. A request for dangerous content is still verified like any other question.
 - **AuraDB Free pauses when idle and has node and relationship caps.** The snapshot fallback is read-only and only as fresh as its last export.
-- **Learning state is local:** router outcomes and feedback live in one SQLite file. Without a persistent disk they reset on restart (see docs/DEPLOY.md).
+- **Learning state is local:** router outcomes and feedback live in one SQLite file. Without a persistent disk they reset on restart (see [Deployment](#deployment)).

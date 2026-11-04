@@ -3,7 +3,12 @@
 Numbers here are measured. Anything that needs the real model, or a real AuraDB run at size, is marked
 **not measured yet** until someone runs it.
 
-## 2026-11-03
+## 2026-11-04
+
+### Documentation in one place
+- The README moved to the repository root, so GitHub shows it, and now covers the new mechanisms, the keys (including
+  `TAVILY_API_KEY`), the measured results and the new tools. `docs/DEPLOY.md` was merged into its Deployment section, with the
+  settings added today, and removed. `FINAL_REPORT.md` holds the final evaluation.
 
 ### Found by version 10
 - **A model reply in prose crashed a question** ("How can someone gain access to an account..."): the drafter expected JSON and
@@ -91,6 +96,8 @@ Numbers here are measured. Anything that needs the real model, or a real AuraDB 
   to see.
 - **Overfitting:** Inception moved to the development set (e2e-16). Five new held-out cases (ho-e2e-25 to 29) were written before the
   change and were not looked up on Wikidata beforehand.
+
+## 2026-11-03
 
 ### Version 6: a control from version 5 showed the new check could overwrite a true fact
 - **Found by version 5's held-out set:** with a correct stored fact (Napoleon born in Ajaccio), the Wikidata cross-check answered "New
